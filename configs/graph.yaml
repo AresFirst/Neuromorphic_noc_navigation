@@ -1,0 +1,6 @@
+graph_type: community
+num_nodes: 200
+seed: 0
+num_pairs: 20
+min_delay_ms: 1
+max_delay_ms: 10

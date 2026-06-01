@@ -1,0 +1,6 @@
+backend: brian2loihi
+dt_ms: 1
+threshold: 1.0
+weight: 1.1
+refractory_ms: 1000
+seed: 0

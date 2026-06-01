@@ -1,0 +1,10 @@
+numpy
+scipy
+networkx
+matplotlib
+pandas
+pyyaml
+tqdm
+pytest
+brian2
+brian2-loihi

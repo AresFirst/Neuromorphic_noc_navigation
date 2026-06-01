@@ -1,0 +1,15 @@
+{
+  "backend_check": {
+    "available": false,
+    "brian2_version": null,
+    "brian2loihi_version": null,
+    "error": "brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
+  },
+  "graph_source": "loaded",
+  "num_pairs": 10,
+  "num_success": 0,
+  "success_rate": 0.0,
+  "mean_arrival_error_ms": null,
+  "max_arrival_error_ms": null,
+  "backend_error": "brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
+}

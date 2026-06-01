@@ -1,0 +1,44 @@
+{
+  "config": {
+    "graph_type": "community",
+    "num_nodes": 200,
+    "seed": 0,
+    "num_pairs": 20,
+    "min_delay_ms": 1,
+    "max_delay_ms": 10
+  },
+  "metrics": {
+    "graph_type": "community",
+    "seed": 0,
+    "num_nodes": 200,
+    "num_edges": 5658,
+    "density": 0.1421608040201005,
+    "is_strongly_connected": true,
+    "average_out_degree": 28.29,
+    "average_in_degree": 28.29,
+    "out_degree_std": 4.084837818077971,
+    "in_degree_std": 4.084837818077971,
+    "average_distance": 0.17910921655658565,
+    "average_base_cost": 0.17954396409825285,
+    "average_delay_ms": 2.9404383174266524,
+    "min_delay_ms": 1,
+    "max_delay_ms": 10,
+    "region_histogram": {
+      "0": 50,
+      "1": 50,
+      "2": 50,
+      "3": 50
+    }
+  },
+  "num_pairs": 20,
+  "example_pair": {
+    "start": 98,
+    "target": 194
+  },
+  "output_files": {
+    "graph_json": "results/week2/graph.json",
+    "graph_metrics_json": "results/week2/graph_metrics.json",
+    "dijkstra_results_csv": "results/week2/dijkstra_results.csv",
+    "example_path_png": "results/week2/example_path.png"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "backend_check": {
+    "available": false,
+    "brian2_version": null,
+    "brian2loihi_version": null,
+    "error": "brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
+  },
+  "loihi_demo_summary": {
+    "lif_demo": {
+      "backend": "unavailable",
+      "num_spikes": 0,
+      "spike_times_ms": [],
+      "success": false,
+      "error": "brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
+    },
+    "delay_demo": {
+      "pre_spike_times_ms": [],
+      "post_spike_times_ms": [],
+      "observed_delay_ms": null,
+      "success": false,
+      "error": "brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
+    },
+    "wavefront_demo": {
+      "spike_times_by_neuron": {},
+      "target_arrival_time_ms": null,
+      "success": false,
+      "error": "brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
+    }
+  },
+  "noxim_result": {
+    "status": "skipped",
+    "reason": "Noxim binary not found"
+  },
+  "notes": "Brian2Loihi is unavailable in this environment.",
+  "install_hint": "Install Brian2Loihi and rerun this script to enable the Loihi demos."
+}

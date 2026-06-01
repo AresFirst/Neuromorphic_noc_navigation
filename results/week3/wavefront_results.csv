@@ -1,0 +1,11 @@
+pair_id,start,target,reference_arrival_ms,loihi_arrival_ms,arrival_error_ms,success,num_spikes,active_neurons,error
+0,98,194,10.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+1,107,10,9.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+2,66,130,7.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+3,124,103,3.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+4,77,122,7.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+5,91,149,6.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+6,55,129,8.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+7,35,72,8.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+8,35,193,8.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
+9,24,158,8.0,,,False,0,0,Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'
