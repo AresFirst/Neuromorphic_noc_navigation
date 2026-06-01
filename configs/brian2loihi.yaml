@@ -1,6 +1,29 @@
+# Brian2Loihi SNN 模拟器配置文件
+# 用于 run_loihi_wavefront.py 等需要 Loihi SNN 后端的实验，
+# 控制脉冲神经元模型的核心参数
+
+# SNN 后端选择。目前固定为 brian2loihi
+# brian2loihi: 使用 brian2-loihi 包的 Loihi 兼容 LIF 神经元模型
 backend: brian2loihi
+
+# 离散时间步长 (毫秒)。Loihi 使用整数时间步，
+# dt_ms=1 表示每个 time step = 1ms，贴近硬件行为
 dt_ms: 1
+
+# 神经元发放阈值 (无量纲，Brian2 默认单位)。
+# 当膜电位 v > threshold 时，神经元发放脉冲并被重置
+# 值越低神经元越容易发放，但过低的阈值会导致噪声误触发
 threshold: 1.0
+
+# 突触权重 (无量纲)。每次前神经元发放时注入后神经元的电流增量
+# weight=1.1 > threshold=1.0，确保单次前驱脉冲即可触发后神经元
+# 这是波前传播可靠性的关键参数
 weight: 1.1
+
+# 不应期 (毫秒)。神经元发放后在此期间内不会再次发放
+# 设置为 1000ms (远大于任何路径的最大延迟)，保证每个神经元只发放一次
+# 这确保只记录"最早到达"的脉冲（对应最短路径）
 refractory_ms: 1000
+
+# 随机种子，保证 SNN 仿真的可复现性
 seed: 0

@@ -1,3 +1,28 @@
+"""Week6 实验: NoC 验证 —— 多映射策略性能对比。
+
+对每种 core 映射策略 (random / community / topology)，
+运行完整的 NoC 验证流水线并对比性能指标。
+
+实验矩阵:
+    mapping_strategies × (start, target) pairs
+
+每个 cell 运行:
+    1. run_single_noc_validation()
+       → SNN 波前 → 路径重建 → 包跟踪 → Noxim 仿真
+    2. 收集: average_hop, total_hop, energy_proxy, hotspot_core, Noxim 延迟/吞吐
+
+输出:
+    - noc_results.csv: 所有组合的结果
+    - mapping_{strategy}.json: 每种策略的 core 映射
+    - packet_trace_pair0_topology.csv: 示例包跟踪
+    - fig_average_hop_by_mapping.png / fig_energy_proxy_by_mapping.png: 柱状图对比
+    - summary.json: 按策略汇总的均值/成功率
+
+CLI:
+    --graph, --loihi-config, --noc-config (YAML), --output
+    --num-pairs (默认 20), --seed (默认 0)
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -28,10 +53,20 @@ def _load_graph(path: Path, seed: int):
 
 
 def _plot_bar(df: pd.DataFrame, value_col: str, save_path: Path, title: str) -> str | None:
+    """绘制按 mapping_strategy 分组的柱状图。
+
+    Args:
+        df: 包含 mapping_strategy 和 value_col 的 DataFrame。
+        value_col: 要绘制的列名。
+        save_path: 输出 PNG 路径。
+        title: 图表标题。
+
+    Returns:
+        错误消息或 None。
+    """
     try:
         os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".matplotlib-cache"))
         import matplotlib
-
         matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
 
@@ -50,6 +85,7 @@ def _plot_bar(df: pd.DataFrame, value_col: str, save_path: Path, title: str) -> 
 
 
 def _parsed_metric(noxim_result: dict, metric: str):
+    """安全地从 Noxim 结果中提取指标。"""
     parsed = noxim_result.get("parsed") or {}
     return parsed.get(metric)
 
@@ -66,9 +102,12 @@ def main() -> int:
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 加载配置
     G, graph_source = _load_graph(Path(args.graph), seed=args.seed)
     loihi_config = load_brian2loihi_config(args.loihi_config)
     noc_config = yaml.safe_load(Path(args.noc_config).read_text(encoding="utf-8")) or {}
+    # 合并 Loihi 和 NoC 配置
     loihi_config = {
         **loihi_config,
         "noxim_bin": noc_config.get("noxim_bin"),
@@ -84,59 +123,55 @@ def main() -> int:
     strategies = list(noc_config.get("mapping_strategies", ["random", "community", "topology"]))
     pairs = sample_start_target_pairs(G, args.num_pairs, seed=args.seed)
 
+    # 保存每种策略的 core 映射（保存结果，便于检查）
     for strategy in strategies:
         mapping = create_core_mapping(G, mesh_rows, mesh_cols, strategy, seed=args.seed)
         save_results_json(mapping, str(output_dir / f"mapping_{strategy}.json"))
 
+    # 运行完整矩阵: strategies × pairs
     rows: list[dict[str, object]] = []
     for strategy in strategies:
         for pair_id, (start, target) in enumerate(pairs):
             pair_output = output_dir / f"pair_{pair_id}_{strategy}"
             result = run_single_noc_validation(
-                G,
-                start,
-                target,
-                mesh_rows,
-                mesh_cols,
-                strategy,
-                str(pair_output),
-                loihi_config=loihi_config,
-                seed=args.seed,
+                G, start, target, mesh_rows, mesh_cols, strategy,
+                str(pair_output), loihi_config=loihi_config, seed=args.seed,
             )
             metrics = result["metrics"]
             noxim_result = result["noxim_result"]
-            rows.append(
-                {
-                    "pair_id": pair_id,
-                    "start": start,
-                    "target": target,
-                    "mapping_strategy": strategy,
-                    "success": result["success"],
-                    "path_cost": result.get("path_cost"),
-                    "num_packets": metrics["num_packets"],
-                    "average_hop": metrics["average_hop"],
-                    "max_hop": metrics["max_hop"],
-                    "total_hop": metrics["total_hop"],
-                    "energy_proxy": metrics["energy_proxy"],
-                    "hotspot_core": metrics["hotspot_core"],
-                    "hotspot_packet_count": metrics["hotspot_packet_count"],
-                    "noxim_status": noxim_result.get("status"),
-                    "noxim_average_latency": _parsed_metric(noxim_result, "average_latency"),
-                    "noxim_throughput": _parsed_metric(noxim_result, "throughput"),
-                    "error": result.get("error"),
-                }
-            )
+            rows.append({
+                "pair_id": pair_id, "start": start, "target": target,
+                "mapping_strategy": strategy,
+                "success": result["success"],
+                "path_cost": result.get("path_cost"),
+                "num_packets": metrics["num_packets"],
+                "average_hop": metrics["average_hop"],
+                "max_hop": metrics["max_hop"],
+                "total_hop": metrics["total_hop"],
+                "energy_proxy": metrics["energy_proxy"],
+                "hotspot_core": metrics["hotspot_core"],
+                "hotspot_packet_count": metrics["hotspot_packet_count"],
+                "noxim_status": noxim_result.get("status"),
+                "noxim_average_latency": _parsed_metric(noxim_result, "average_latency"),
+                "noxim_throughput": _parsed_metric(noxim_result, "throughput"),
+                "error": result.get("error"),
+            })
+
+            # 复制第一对 topology 策略的示例数据
             if pair_id == 0 and strategy == "topology":
                 packet_src = Path(result.get("packet_trace_path", pair_output / "packet_trace_topology.csv"))
                 traffic_src = Path(result.get("traffic_table_path", pair_output / "traffic_table_topology.txt"))
                 if packet_src.exists():
-                    (output_dir / "packet_trace_pair0_topology.csv").write_text(packet_src.read_text(encoding="utf-8"), encoding="utf-8")
+                    (output_dir / "packet_trace_pair0_topology.csv").write_text(
+                        packet_src.read_text(encoding="utf-8"), encoding="utf-8")
                 if traffic_src.exists():
-                    (output_dir / "traffic_table_pair0_topology.txt").write_text(traffic_src.read_text(encoding="utf-8"), encoding="utf-8")
+                    (output_dir / "traffic_table_pair0_topology.txt").write_text(
+                        traffic_src.read_text(encoding="utf-8"), encoding="utf-8")
 
     df = pd.DataFrame.from_records(rows)
     df.to_csv(output_dir / "noc_results.csv", index=False)
 
+    # 按策略汇总
     summary_by_strategy: dict[str, dict[str, object]] = {}
     for strategy, group in df.groupby("mapping_strategy"):
         success_group = group[group["success"] == True]
@@ -150,26 +185,18 @@ def main() -> int:
             "success_rate": float(len(success_group) / len(group)) if len(group) else 0.0,
         }
 
+    # 生成对比柱状图
     warnings = {
         "fig_average_hop_by_mapping": _plot_bar(
-            df,
-            "average_hop",
-            output_dir / "fig_average_hop_by_mapping.png",
-            "Average Hop by Mapping",
-        ),
+            df, "average_hop", output_dir / "fig_average_hop_by_mapping.png",
+            "Average Hop by Mapping"),
         "fig_energy_proxy_by_mapping": _plot_bar(
-            df,
-            "energy_proxy",
-            output_dir / "fig_energy_proxy_by_mapping.png",
-            "Energy Proxy by Mapping",
-        ),
+            df, "energy_proxy", output_dir / "fig_energy_proxy_by_mapping.png",
+            "Energy Proxy by Mapping"),
     }
     summary = {
-        "graph_source": graph_source,
-        "mesh_rows": mesh_rows,
-        "mesh_cols": mesh_cols,
-        "num_pairs": len(pairs),
-        "strategies": strategies,
+        "graph_source": graph_source, "mesh_rows": mesh_rows, "mesh_cols": mesh_cols,
+        "num_pairs": len(pairs), "strategies": strategies,
         "by_mapping_strategy": summary_by_strategy,
         "warnings": {key: value for key, value in warnings.items() if value},
     }
