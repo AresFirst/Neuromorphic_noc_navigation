@@ -8,6 +8,8 @@ _EXPORTS = {
     "run_loihi_lif_demo": ("loihi_planner.loihi_lif_demo", "run_loihi_lif_demo"),
     "run_loihi_wavefront": ("loihi_planner.loihi_wavefront", "run_loihi_wavefront"),
     "run_loihi_small_wavefront_demo": ("loihi_planner.loihi_small_wavefront_demo", "run_loihi_small_wavefront_demo"),
+    "RelayController": ("loihi_planner.relay_controller", "RelayController"),
+    "replan_from_position": ("loihi_planner.dynamic_replanning", "replan_from_position"),
     "compare_snn_path_with_dijkstra": ("loihi_planner.path_compare", "compare_snn_path_with_dijkstra"),
     "compute_path_cost": ("loihi_planner.path_compare", "compute_path_cost"),
     "reconstruct_path_from_parent": ("loihi_planner.path_reconstruction", "reconstruct_path_from_parent"),

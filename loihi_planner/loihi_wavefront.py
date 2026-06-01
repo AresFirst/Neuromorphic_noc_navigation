@@ -12,8 +12,7 @@ def _build_sim_time_ms(G: nx.DiGraph, reference_arrival: float | None, delay_att
     delays = [int(attrs.get(delay_attr, 1)) for _, _, attrs in G.edges(data=True) if attrs.get("state") != "blocked"]
     max_delay = max(delays) if delays else 1
     path_bound = int((reference_arrival or 0.0) + max_delay + 5)
-    graph_bound = int(max(5, len(G) * max_delay + 5))
-    return max(path_bound, graph_bound)
+    return max(5, path_bound)
 
 
 def _format_error(

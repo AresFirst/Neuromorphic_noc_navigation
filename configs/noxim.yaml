@@ -1,5 +1,14 @@
 mesh_rows: 8
 mesh_cols: 8
-noxim_bin: null
-noxim_config_path: null
+mapping_strategies:
+  - random
+  - community
+  - topology
+noxim_root: ~/code/noxim-master
+noxim_bin: ~/code/noxim-master/bin/noxim
+noxim_config_path: ~/code/noxim-master/config_examples/default_configMeshNoHUB.yaml
+noxim_power_path: ~/code/noxim-master/bin/power.yaml
+noxim_packet_size: 2
+noxim_warmup_cycles: 0
+noxim_simulation_margin_cycles: 200
 seed: 0

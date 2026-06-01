@@ -26,9 +26,10 @@ def test_parse_noxim_output_extracts_known_metrics():
         Energy = 33.0
         """
     )
-    assert parsed == {
-        "average_latency": 12.5,
-        "throughput": 0.91,
-        "power": 4.2,
-        "energy": 33.0,
-    }
+    assert parsed["average_latency"] == 12.5
+    assert parsed["global_average_delay_cycles"] == 12.5
+    assert parsed["throughput"] == 0.91
+    assert parsed["network_throughput_flits_per_cycle"] == 0.91
+    assert parsed["power"] == 4.2
+    assert parsed["energy"] == 33.0
+    assert parsed["total_energy_j"] == 33.0
