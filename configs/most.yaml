@@ -1,0 +1,28 @@
+map_source: dataset
+
+dataset:
+  name: MoST
+  type: sumo_netxml
+  root_dir: data/datasets/MoSTScenario
+  path: null
+
+import:
+  auto_find_netxml: true
+  ignore_internal_edges: true
+  largest_strongly_connected_component: true
+  simplify_graph: true
+  max_nodes: 2000
+  min_delay_ms: 1
+  max_delay_ms: 10
+  use_travel_time_if_speed_available: true
+  region_method: spatial_grid
+  region_grid_rows: 4
+  region_grid_cols: 4
+  seed: 0
+
+output:
+  output_dir: results/most
+  graph_json: results/most/graph.json
+  graph_metrics_json: results/most/graph_metrics.json
+  preview_png: results/most/preview.png
+  import_summary_json: results/most/import_summary.json

@@ -22,11 +22,15 @@ from typing import Any
 import networkx as nx
 
 
+_NESTED_ATTRS_KEY = "__attrs__"
+
+
 def save_graph_json(G, path: str) -> None:
     """将 NetworkX 有向图导出为 JSON 文件。
 
     节点属性中的 "id" 作为节点标识符，其余属性保留。
-    边属性中的 "source" / "target" 作为边标识符，其余属性保留。
+    边记录中的 "source" / "target" 作为端点标识符。若边属性本身也包含
+    "source" 或 "target"，则把边属性放入 "__attrs__"，避免覆盖端点字段。
 
     Args:
         G: NetworkX 有向图。
@@ -42,11 +46,19 @@ def save_graph_json(G, path: str) -> None:
     }
     for node, attrs in G.nodes(data=True):
         record = {"id": node}
-        record.update(attrs)
+        attrs_dict = dict(attrs)
+        if "id" in attrs_dict:
+            record[_NESTED_ATTRS_KEY] = attrs_dict
+        else:
+            record.update(attrs_dict)
         payload["nodes"].append(record)
     for source, target, attrs in G.edges(data=True):
         record = {"source": source, "target": target}
-        record.update(attrs)
+        attrs_dict = dict(attrs)
+        if "source" in attrs_dict or "target" in attrs_dict:
+            record[_NESTED_ATTRS_KEY] = attrs_dict
+        else:
+            record.update(attrs_dict)
         payload["edges"].append(record)
 
     output = Path(path)
@@ -69,11 +81,17 @@ def load_graph_json(path: str) -> nx.DiGraph:
     for node in payload.get("nodes", []):
         attrs = dict(node)
         node_id = attrs.pop("id")
+        nested_attrs = attrs.pop(_NESTED_ATTRS_KEY, None)
+        if isinstance(nested_attrs, dict):
+            attrs.update(nested_attrs)
         G.add_node(node_id, **attrs)
     for edge in payload.get("edges", []):
         attrs = dict(edge)
         source = attrs.pop("source")
         target = attrs.pop("target")
+        nested_attrs = attrs.pop(_NESTED_ATTRS_KEY, None)
+        if isinstance(nested_attrs, dict):
+            attrs.update(nested_attrs)
         G.add_edge(source, target, **attrs)
     return G
 

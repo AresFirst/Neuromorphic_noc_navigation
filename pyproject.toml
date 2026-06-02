@@ -1,0 +1,15 @@
+[build-system]
+requires = []
+build-backend = "build_backend"
+backend-path = ["."]
+
+[project]
+name = "neuromorphic-noc-navigation"
+version = "0.1.0"
+description = "Loihi-like SNN wavefront navigation on complex graphs with NoC validation"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::pyparsing.exceptions.PyparsingDeprecationWarning"]

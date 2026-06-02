@@ -16,6 +16,8 @@ def test_graph_json_round_trip_preserves_structure_and_attrs(tmp_path):
     tmp_path: pytest 提供的临时目录 fixture。
     """
     graph = generate_complex_graph("random_geometric", 20, seed=5)
+    source, target = next(iter(graph.edges()))
+    graph[source][target]["source"] = "most"
     path = tmp_path / "graph.json"
     save_graph_json(graph, str(path))
 
@@ -35,6 +37,7 @@ def test_graph_json_round_trip_preserves_structure_and_attrs(tmp_path):
         assert loaded[source][target][key] == pytest.approx(graph[source][target][key])
     for key in ["delay_ms", "original_delay_ms", "state"]:
         assert loaded[source][target][key] == graph[source][target][key]
+    assert loaded[source][target]["source"] == "most"
 
 
 def test_save_results_json(tmp_path):
