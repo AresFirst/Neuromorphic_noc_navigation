@@ -1,15 +1,16 @@
 {
   "backend_check": {
-    "available": false,
-    "brian2_version": null,
-    "brian2loihi_version": null,
-    "error": "brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
+    "available": true,
+    "brian2_version": "2.9.0",
+    "brian2loihi_version": "0.5.2",
+    "brian2loihi_module": "brian2_loihi",
+    "error": null
   },
   "graph_source": "loaded",
   "num_pairs": 50,
-  "num_success": 0,
-  "success_rate": 0.0,
-  "mean_optimality_ratio": null,
-  "max_optimality_ratio": null,
-  "same_cost_rate": 0.0
+  "num_success": 50,
+  "success_rate": 1.0,
+  "mean_optimality_ratio": 1.0,
+  "max_optimality_ratio": 1.0,
+  "same_cost_rate": 1.0
 }

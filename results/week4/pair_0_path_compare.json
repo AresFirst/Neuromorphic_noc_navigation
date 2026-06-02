@@ -3,8 +3,14 @@
   "start": 98,
   "target": 194,
   "reference_arrival_ms": 10.0,
-  "loihi_arrival_ms": null,
-  "snn_path": null,
+  "loihi_arrival_ms": 10.0,
+  "snn_path": [
+    98,
+    13,
+    4,
+    15,
+    194
+  ],
   "dijkstra_path": [
     98,
     13,
@@ -13,14 +19,14 @@
     194
   ],
   "compare": {
-    "snn_cost": null,
+    "snn_cost": 10.0,
     "dijkstra_cost": 10.0,
-    "optimality_ratio": null,
-    "same_path": false,
-    "same_cost": false,
-    "snn_num_hops": null,
+    "optimality_ratio": 1.0,
+    "same_path": true,
+    "same_cost": true,
+    "snn_num_hops": 4,
     "dijkstra_num_hops": 4
   },
-  "success": false,
-  "error": "Brian2Loihi unavailable: brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
+  "success": true,
+  "error": null
 }
