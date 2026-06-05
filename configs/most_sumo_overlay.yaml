@@ -1,0 +1,23 @@
+map:
+  root_dir: datasets/MoSTScenario-master
+  netxml_path: null
+  sumocfg_path: datasets/MoSTScenario-master/scenario/most.sumocfg
+  require_sumo_load_check: true
+
+planning:
+  start: null
+  target: null
+  seed: 0
+  max_nodes: 500
+  min_delay_ms: 1
+  max_delay_ms: 10
+  use_travel_time_if_speed_available: true
+
+loihi:
+  config_path: configs/brian2loihi.yaml
+
+visualization:
+  max_background_edges: null
+
+output:
+  output_dir: results/most_sumo_overlay

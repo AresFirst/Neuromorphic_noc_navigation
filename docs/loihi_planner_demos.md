@@ -1,6 +1,6 @@
 # loihi_planner Demo 详解
 
-本文档解释 `loihi_planner` 中几个 Loihi/Brian2Loihi demo 的设计目的、网络结构、关键参数、预期结果，以及它们和正式 `run_loihi_wavefront()` 波前路由过程之间的关系。
+本文档解释 `loihi_planner` 中几个 Loihi/Brian2Loihi demo 的设计目的、网络结构、关键参数、预期结果，以及它们和正式 `run_loihi_wavefront()` 波前路由过程之间的关系。当前项目保留 `loihi_planner/` 作为成熟实现，同时通过 `src/nmn/loihi/` 提供标准包 wrapper。
 
 相关文件：
 
@@ -10,6 +10,29 @@
 - `loihi_planner/loihi_wavefront.py`
 - `loihi_planner/_brian2_runner.py`
 - `loihi_planner/backend_check.py`
+- `src/nmn/loihi/backend.py`
+- `src/nmn/loihi/wavefront.py`
+- `src/nmn/loihi/parent_trace.py`
+- `src/nmn/loihi/path_reconstruction.py`
+- `src/nmn/loihi/path_compare.py`
+
+## 当前项目中的位置
+
+Loihi/Brian2Loihi 是当前城市道路导航软件层的规划核心之一：
+
+```text
+MoST / SUMO 或 synthetic graph
+    -> 临时 networkx.DiGraph
+    -> delay_ms 编码
+    -> run_loihi_wavefront()
+    -> infer_parent_trace_from_spikes()
+    -> reconstruct_path_from_parent()
+    -> 路径比较或 SUMO route 反映射
+```
+
+在 MoST/SUMO 原始几何 overlay 入口中，`run_loihi_wavefront()` 只负责计算路径传播；最终地图显示由 `src/nmn/sumo/visualization.py` 使用 SUMO lane/edge geometry 完成。`networkx.DiGraph` 仍是计算图，不是最终地图格式。
+
+NoC / Noxim 可以消费 wavefront 相关结果做可选验证，但不是城市道路软件层导航的必需步骤。
 
 ## 总体定位
 
@@ -793,6 +816,14 @@ print(run_loihi_small_wavefront_demo())
 PY
 ```
 
+新代码也可以通过 `nmn.loihi` wrapper 导入正式规划函数：
+
+```python
+from nmn.loihi import run_loihi_wavefront
+from nmn.loihi import infer_parent_trace_from_spikes
+from nmn.loihi import reconstruct_path_from_parent
+```
+
 也可以通过测试套件间接验证：
 
 ```bash
@@ -822,4 +853,4 @@ PY
 - `loihi_lif_demo.py` 验证“神经元能发放”。
 - `loihi_delay_demo.py` 验证“突触延迟等于边延迟”。
 - `loihi_small_wavefront_demo.py` 验证“多路径波前的首次到达等于最短路径代价”。
-- `loihi_wavefront.py` 把这些机制扩展到任意复杂图，并作为后续 parent trace、路径重建、动态重规划和 NoC packet trace 的输入基础。
+- `loihi_wavefront.py` 把这些机制扩展到任意复杂图，并作为后续 parent trace、路径重建、动态重规划、SUMO route 反映射和可选 NoC packet trace 的输入基础。

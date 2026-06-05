@@ -1,9 +1,9 @@
-# 重构审计报告
+# 当前结构审计
 
-生成时间：2026-06-02  
+更新时间：2026-06-05
 仓库：`neuromorphic_noc_navigation`
 
-说明：本文档记录的是整理前的基线状态，用于和后续的 `src/nmn` 结构对照。
+本文档记录当前项目结构和仍需注意的兼容边界。早期“整理前基线”已经不再准确：项目现在已有 `src/nmn` 标准包入口，同时保留根目录旧包作为兼容实现。
 
 ## 1. 当前目录树
 
@@ -23,114 +23,125 @@ neuromorphic_noc_navigation/
 ├── noc/
 ├── results/
 ├── scripts/
+├── src/nmn/
 └── tests/
 ```
 
-当前仓库已经具备完整实验链路，但代码主要分散在根目录包中，尚未统一到 `src/nmn/` 的标准结构。
+## 2. 当前主线
 
-## 2. 当前主要模块清单
+当前优先目标是城市道路地图导航的软件层：
 
-- `graph/`：synthetic graph、Dijkstra 基线、图序列化、指标、可视化
-- `dataset_import/`：MoST / SUMO `.net.xml` 导入与标准化
-- `loihi_planner/`：Brian2Loihi 后端、波前路由、parent trace、STDP、路径重建、动态重规划
-- `localization/`：Grid cells、Place cells、动态起点
-- `noc/`：NoC core mapping、packet trace、traffic table、Noxim 接口、代理指标
-- `experiments/`：各周实验入口脚本
-- `docs/`：现有说明文档
-- `tests/`：单元测试与集成测试
+```text
+MoST / SUMO net.xml
+    -> 保留原始 SUMO geometry
+    -> 临时 DiGraph 计算图
+    -> SNN delay 编码
+    -> Brian2Loihi wavefront
+    -> parent trace 路径回溯
+    -> SUMO edge/lane/polyline 反映射
+    -> 原始 SUMO geometry overlay
+```
 
-## 3. 重复文件或功能重叠文件
+关键实现：
 
-- `graph/` 与 `dataset_import/` 都提供图构建入口，但面向对象不同：前者是 synthetic graph，后者是公开道路数据导入。
-- `loihi_planner/path_compare.py` 与 `experiments/visualize_path_comparison.py` 都涉及路径对比可视化，前者负责数值对比，后者负责展示。
-- `noc/noc_experiment.py` 与 `experiments/run_noc_validation.py` 都在编排 NoC 验证流程，前者偏函数级，后者偏 CLI 级。
-- `README.md`、`PROJECT_GUIDE.md`、`docs/loihi_planner_demos.md` 的内容部分重叠，且语言风格不完全统一。
+- `src/nmn/sumo/geometry.py`
+- `src/nmn/sumo/conversion.py`
+- `src/nmn/sumo/visualization.py`
+- `src/nmn/sumo/sumo_check.py`
+- `experiments/run_most_sumo_overlay_navigation.py`
+- `configs/most_sumo_overlay.yaml`
 
-## 4. 命名不一致的文件
+## 3. 已完成的标准包入口
 
-- 根目录包名仍是 `graph`、`dataset_import`、`loihi_planner`、`noc`、`localization`，与目标结构 `src/nmn/...` 不一致。
-- `noc/noc_proxy_metrics.py` 与目标结构中的 `proxy_metrics.py` 命名不一致。
-- `noc/noxim_wrapper.py` 与目标结构中的 `noxim.py` 命名不一致。
-- `graph/complex_graph_generator.py` 与目标结构中的 `synthetic.py` 命名不一致。
-- 现有文档仍混用中文和英文标题，未统一为中文。
+### `src/nmn/dynamic`
 
-## 5. 可以移动但不应删除的文件
+承载动态拥塞、车辆状态、重规划策略、SNN cost adapter 和动态可视化。
 
-- `graph/complex_graph_generator.py`
-- `graph/graph_baseline.py`
-- `graph/graph_io.py`
-- `graph/graph_metrics.py`
-- `graph/visualization.py`
-- `dataset_import/` 全部文件
-- `loihi_planner/` 相关核心文件
-- `localization/` 相关文件
-- `noc/` 相关文件
-- `experiments/` 所有入口脚本
+### `src/nmn/loihi`
 
-这些文件是当前实验链路的实际实现，不应删除，只适合迁移或建立兼容包装。
+提供静态 wrapper：
 
-## 6. 已有实验脚本入口
+```text
+src/nmn/loihi/backend.py
+src/nmn/loihi/parent_trace.py
+src/nmn/loihi/path_compare.py
+src/nmn/loihi/path_reconstruction.py
+src/nmn/loihi/wavefront.py
+```
 
-- `experiments/run_week1_toolchain_check.py`
-- `experiments/run_graph_baseline.py`
-- `experiments/run_most_import.py`
-- `experiments/run_most_navigation.py`
-- `experiments/run_loihi_wavefront.py`
-- `experiments/run_stdp_path_reconstruction.py`
-- `experiments/run_dynamic_start_and_relay.py`
-- `experiments/run_noc_validation.py`
-- `experiments/visualize_path_comparison.py`
+用途：
 
-## 7. 已有配置文件
+- 让新代码可以稳定使用 `nmn.loihi.*`。
+- 解决 Pylance 对 `nmn.loihi.parent_trace` 等导入无法解析的问题。
+- 避免重复实现 `loihi_planner/` 里的成熟逻辑。
+
+### `src/nmn/sumo`
+
+新增 SUMO 原始几何保留链路：
+
+- 解析 `.net.xml` 的 junction、edge、lane shape。
+- 生成临时 `networkx.DiGraph`，边属性保留 SUMO edge/lane/shape 映射。
+- 将 SNN 输出路径映射回 SUMO edge ID 和 polyline。
+- 使用 SUMO lane/edge geometry 绘制最终 overlay，不使用 NetworkX scatter 作为最终地图。
+
+## 4. 仍作为兼容实现保留的旧包
+
+以下目录仍是实际功能的重要来源，不应删除：
+
+- `graph/`
+- `dataset_import/`
+- `loihi_planner/`
+- `localization/`
+- `noc/`
+
+当前策略是：
+
+1. 新代码优先通过 `src/nmn` 导入。
+2. 旧入口继续服务已有脚本和测试。
+3. 迁移只做兼容 wrapper 或小步替换，避免一次性移动造成 import 断裂。
+
+## 5. 当前实验入口
+
+主要入口：
+
+- `experiments/run_most_sumo_overlay_navigation.py`：MoST/SUMO 原始几何 overlay 导航。
+- `experiments/run_dynamic_city_navigation.py`：graph-level 动态城市导航。
+- `experiments/run_most_import.py`：MoST `.net.xml` 到标准 `graph.json`。
+- `experiments/run_most_navigation.py`：MoST graph-level 软件闭环导航。
+- `experiments/run_loihi_wavefront.py`：通用 Brian2Loihi wavefront。
+- `experiments/run_stdp_path_reconstruction.py`：STDP / parent trace 路径重建。
+- `experiments/run_dynamic_start_and_relay.py`：动态起点与 relay gate。
+- `experiments/run_toolchain_check.py`：工具链检查。
+
+可选入口：
+
+- `experiments/run_noc_validation.py`：NoC / Noxim 验证。
+- `experiments/run_week1_toolchain_check.py`：旧工具链检查入口，保留兼容。
+- `experiments/visualize_path_comparison.py`：旧路径对比展示入口。
+
+## 6. 当前配置文件
 
 - `configs/graph.yaml`
 - `configs/brian2loihi.yaml`
-- `configs/noxim.yaml`
 - `configs/most.yaml`
+- `configs/most_sumo_overlay.yaml`
+- `configs/dynamic_city_navigation.yaml`
+- `configs/noxim.yaml`
 
-## 8. 已有测试文件
+注意：`configs/most_sumo_overlay.yaml` 默认指向 `datasets/MoSTScenario-master`，`configs/most.yaml` 默认指向 `data/datasets/MoSTScenario`。如果数据只存在一个位置，需要同步修改配置。
 
-当前测试覆盖图生成、导入、Loihi 波前、路径重建、动态起点、NoC、MoST 导入与软件闭环导航等场景。
+## 7. 风险点
 
-## 9. 可能会被重构影响的风险点
+1. Brian2Loihi 是强依赖，不能静默替换为普通 Brian2。
+2. `networkx.DiGraph` 只适合计算层；最终 SUMO/MoST 地图可视化必须保留原始 geometry。
+3. MoST 数据目录可能有 `datasets/MoSTScenario-master` 和 `data/datasets/MoSTScenario` 两种本地路径，运行前要核对 config。
+4. `eclipse-sumo` Python wheel 在 macOS 上可能因 bundled dylib 签名被系统拒绝；可导入 `sumolib/traci` 不代表 `sumo` CLI 可运行。
+5. 完整 `pytest` 可能受本地 Noxim 二进制状态影响；MoST/SUMO 软件层验证建议用 `pytest -k 'not noxim'`。
+6. `graph.json` 序列化需要处理边属性 `source` / `target` 与 JSON 端点字段的命名冲突。
 
-1. 现有脚本和测试大量依赖根目录包名，直接改目录会导致 import 链断裂。
-2. Brian2Loihi 后端检测是强依赖，不能回退成普通 Brian2。
-3. MoST 导入会读取本地大 XML 文件，移动数据目录或改默认路径会影响导入命令。
-4. `graph.json` 序列化里存在保留字段冲突风险，边属性 `source` 需要特别处理。
-5. `pytest` 里已有许多回归测试，迁移后必须保持旧入口兼容。
-6. 文档语言统一为中文时，要避免把用户提供的命令示例改坏。
+## 8. 建议后续整理
 
-## 10. 建议的新目录结构
-
-建议采用以下分层：
-
-```text
-src/nmn/
-├── graph/
-├── datasets/
-├── loihi/
-├── localization/
-├── noc/
-└── utils/
-```
-
-配合：
-
-```text
-experiments/
-configs/
-tests/
-docs/
-data/
-results/
-scripts/
-```
-
-建议策略：
-
-- `src/nmn` 作为新标准包名；
-- 根目录旧包保留兼容 wrapper；
-- 实验脚本保持 CLI 不变；
-- 文档统一中文；
-- `README.md` 只保留项目概览和最常用命令。
+- 将 `dataset_import/` 中稳定的 SUMO/MoST 导入逻辑逐步迁移或包装到 `src/nmn/datasets`。
+- 将 `graph/` 中稳定的生成、基线和序列化逻辑逐步包装到 `src/nmn/graph`。
+- 保持 `src/nmn/sumo` 作为 SUMO 原始几何显示链路，不与 graph-level 导入混合。
+- 将文档和 README 继续围绕“软件层城市导航主线 + 可选 NoC 验证”组织。
