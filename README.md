@@ -1,288 +1,95 @@
-# neuromorphic_noc_navigation
+# Neuromorphic SUMO Navigation
 
-这是一个面向复杂图与城市道路图的神经形态路径规划项目。当前主线是 MoST/SUMO 城市道路地图的软件层导航：保留原始 SUMO 道路几何用于最终显示，临时使用 `networkx.DiGraph` 做计算和 SNN 编码，再用 Brian2Loihi wavefront 完成最短延迟路径传播。项目也支持 parent trace / STDP 回溯、动态起点、relay gate、动态拥塞重规划和可选 NoC 验证。
-
-## 核心流程
+这是一个精简后的城市道路地图导航项目。当前只保留一条可运行主线：
 
 ```text
-MoST / SUMO net.xml 或 synthetic graph
-    -> 保留原始 SUMO geometry（城市地图显示层）
-    -> 临时 networkx.DiGraph（计算层）
-    -> Brian2Loihi / Loihi-like SNN wavefront
-    -> parent trace / STDP 路径回溯
-    -> SUMO edge/lane/polyline 反映射或 graph-level 路径对比
-    -> 原始 SUMO geometry overlay / 动态可视化
-    -> 可选 NoC / Noxim 验证
+MoST/SUMO 原始地图
+    -> 解析 SUMO .net.xml 道路几何
+    -> 临时 DiGraph 计算层
+    -> Brian2Loihi wavefront 路径规划
+    -> 随机背景车辆与拥塞更新
+    -> 动态重规划
+    -> 回写 SUMO road/lane geometry
+    -> 在原始地图上叠加显示路径、车辆、拥塞和脉冲传播
 ```
 
-## 安装
+本版本删除了旧的硬件互连验证逻辑、合成图生成入口、Brian2Loihi 小型 demo、STDP/relay demo、旧实验脚本和分散文档。`networkx.DiGraph` 只作为临时计算结构存在，不作为主地图格式，也不生成最终地图可视化。最终图像和 GIF 始终基于 SUMO `.net.xml` 中的原始 lane shape / edge geometry。
+
+## 当前保留内容
+
+```text
+.
+├── README.md
+├── configs/
+│   ├── brian2loihi.yaml
+│   └── dynamic_sumo_overlay.yaml
+├── datasets/
+│   └── MoSTScenario-master/
+│       └── scenario/
+│           ├── most.sumocfg
+│           └── in/most.net.xml
+├── experiments/
+│   └── run_dynamic_sumo_overlay_navigation.py
+├── loihi_planner/
+│   ├── _brian2_runner.py
+│   ├── backend_check.py
+│   ├── loihi_config.py
+│   ├── loihi_wavefront.py
+│   ├── parent_trace.py
+│   ├── path_compare.py
+│   ├── path_reconstruction.py
+│   └── wavefront_reference.py
+├── src/nmn/
+│   ├── loihi/__init__.py
+│   └── sumo/
+│       ├── conversion.py
+│       ├── dynamic.py
+│       ├── geometry.py
+│       ├── sumo_check.py
+│       └── visualization.py
+└── tests/
+    ├── test_sumo_check.py
+    ├── test_sumo_dynamic.py
+    └── test_sumo_geometry_overlay.py
+```
+
+## 模块职责
+
+- `src/nmn/sumo/geometry.py`：读取 SUMO `.net.xml`，保留 junction、edge、lane shape。
+- `src/nmn/sumo/conversion.py`：把 SUMO 几何临时转换为规划用 `DiGraph`，并把 SNN 输出路径映射回 SUMO road/lane。
+- `src/nmn/sumo/dynamic.py`：生成随机车辆，按车辆密度更新拥堵、阻塞、边延迟和节点阈值惩罚。
+- `src/nmn/sumo/visualization.py`：在原始 SUMO 道路几何上绘制动态帧、路线、车辆、拥塞和 wavefront。
+- `loihi_planner/loihi_wavefront.py`：运行 Brian2Loihi wavefront，把道路边延迟编码为突触延迟。
+- `experiments/run_dynamic_sumo_overlay_navigation.py`：当前唯一主入口。
+
+## 环境安装
+
+建议继续使用已有的 `brian2loihi` conda 环境：
 
 ```bash
+conda activate brian2loihi
+pip install -r requirements.txt
 pip install -e .
-python -m pip install -r requirements.txt
 ```
 
-Brian2Loihi 需要在当前 Python 环境中可导入。项目不会把 Brian2Loihi 静默替换成普通 Brian2；如果后端不可用，相关脚本会返回明确错误或 skipped 状态。
-
-## 测试
+如果你要执行真实 SUMO 地图加载检查，还需要安装 SUMO 并确保命令行可用：
 
 ```bash
-pytest
-```
-
-也可以使用脚本：
-
-```bash
-bash scripts/run_tests.sh
-```
-
-## 常用命令
-
-### 工具链检查
-
-```bash
-python experiments/run_toolchain_check.py
-```
-
-旧入口仍保留：
-
-```bash
-python experiments/run_week1_toolchain_check.py
-```
-
-### 生成 synthetic graph 并运行 Dijkstra 基线
-
-```bash
-python experiments/run_graph_baseline.py --config configs/graph.yaml --output results/week2
-```
-
-### 运行 Brian2Loihi wavefront
-
-```bash
-python experiments/run_loihi_wavefront.py \
-  --graph results/week2/graph.json \
-  --config configs/brian2loihi.yaml \
-  --output results/week3 \
-  --num-pairs 10 \
-  --seed 0
-```
-
-### 运行 STDP / parent trace 路径重建
-
-```bash
-python experiments/run_stdp_path_reconstruction.py \
-  --graph results/week2/graph.json \
-  --config configs/brian2loihi.yaml \
-  --output results/week4 \
-  --num-pairs 20 \
-  --seed 0
-```
-
-### 运行动态起点与 relay gate
-
-```bash
-python experiments/run_dynamic_start_and_relay.py \
-  --graph results/week2/graph.json \
-  --config configs/brian2loihi.yaml \
-  --output results/week5 \
-  --seed 0
-```
-
-## MoST 城市地图
-
-MoST 是 Monaco SUMO Traffic Scenario。项目只实现本地导入逻辑，不自动联网下载地图。
-
-推荐本地路径：
-
-```bash
-git clone https://github.com/lcodeca/MoSTScenario.git data/datasets/MoSTScenario
-```
-
-当前仓库示例数据也可能位于：
-
-```text
-datasets/MoSTScenario-master/
-```
-
-`configs/most_sumo_overlay.yaml` 默认使用 `datasets/MoSTScenario-master`，`configs/most.yaml` 默认使用 `data/datasets/MoSTScenario`。如果你的本地数据只在其中一个位置，请同步修改配置。
-
-导入 MoST / SUMO `.net.xml`：
-
-```bash
-python experiments/run_most_import.py --config configs/most.yaml
-```
-
-导入后会生成：
-
-```text
-results/most/graph.json
-results/most/graph_metrics.json
-results/most/preview.png
-results/most/import_summary.json
-```
-
-### MoST / SUMO 原始几何叠加导航
-
-这个入口用于跑通“MoST 地图 -> 临时 DiGraph -> Brian2Loihi -> SUMO 道路轨迹 -> 原始地图 overlay”的软件层闭环。这里的 `networkx.DiGraph` 只作为 SNN 规划的中间计算表示，最终可视化始终使用 SUMO `.net.xml` 中的 lane shape / edge geometry，不输出 NetworkX 点线图作为最终地图。
-
-推荐数据流：
-
-```text
-MoST / SUMO net.xml
-    -> 临时 networkx.DiGraph（仅用于计算）
-    -> SNN delay 编码
-    -> Brian2Loihi wavefront
-    -> parent trace 路径回溯
-    -> SUMO edge id / lane id / polyline 反映射
-    -> 原始 SUMO 几何 route overlay
-```
-
-目录与关键文件：
-
-```text
-src/nmn/sumo/geometry.py        # 读取 SUMO net.xml，保留 junction、edge、lane shape
-src/nmn/sumo/conversion.py      # most_to_digraph / digraph_to_snn / snn_output_to_path / path_to_sumo_route
-src/nmn/sumo/visualization.py   # 基于原始 SUMO 几何绘制 route overlay
-src/nmn/sumo/sumo_check.py      # SUMO CLI 与地图加载检查
-configs/most_sumo_overlay.yaml  # MoST + SUMO overlay 导航配置
-experiments/run_most_sumo_overlay_navigation.py
-```
-
-SUMO 安装与检查：
-
-```bash
-# macOS 推荐先按官方文档安装 Eclipse SUMO 的 macOS package：
-# https://eclipse.dev/sumo/docs/Installing/index.html
-
-# 如果使用 Homebrew，需要先启用 DLR SUMO tap；默认 homebrew/core 没有 sumo：
-brew tap dlr-ts/sumo
-brew install sumo
-
-# 也可以在 Brian2Loihi 环境中安装官方 Python wheel：
-/opt/anaconda3/envs/brian2loihi/bin/python -m pip install eclipse-sumo
-
-# 如果 sumo 不在 PATH，显式指定：
-export SUMO_HOME=/path/to/eclipse-sumo
-export SUMO_BINARY="$SUMO_HOME/bin/sumo"
-export SUMO_GUI_BINARY="$SUMO_HOME/bin/sumo-gui"
-
 sumo --version
-sumo-gui datasets/MoSTScenario-master/scenario/most.sumocfg
+sumo-gui --version
 ```
 
-注意：不要把 conda-forge 上名为 `sumo` 的材料科学工具包当成 Eclipse SUMO。项目的 `check_sumo_available()` 会调用 `sumo --version` 并在检测到同名错误命令时返回明确错误。
-
-如果 `eclipse-sumo` wheel 在 macOS 上因为 bundled dylib 签名被系统拒绝，`sumolib/traci` 仍可能可导入，但 `sumo`/`sumo-gui` 无法运行；这时应改用官方 macOS package、Homebrew tap 或源码安装得到可执行的 SUMO CLI。
-
-运行完整 overlay 导航：
+macOS 上可以用 Homebrew 安装：
 
 ```bash
-python experiments/run_most_sumo_overlay_navigation.py \
-  --config configs/most_sumo_overlay.yaml
+brew install sumo
 ```
 
-如果当前机器的 SUMO 二进制暂时不可运行，但需要先验证 Python 软件链路，可以显式跳过 headless SUMO 加载检查：
+如果本机 SUMO 命令暂时不可用，可以先使用 `--skip-sumo-load-check` 跑通软件层闭环。这个参数只跳过 SUMO 可执行文件加载检查，不影响 `.net.xml` 几何解析、Brian2Loihi 规划和地图 overlay 输出。
 
-```bash
-python experiments/run_most_sumo_overlay_navigation.py \
-  --config configs/most_sumo_overlay.yaml \
-  --skip-sumo-load-check
-```
+## 运行主流程
 
-输出文件：
-
-```text
-results/most_sumo_overlay/planning_summary.json
-results/most_sumo_overlay/sumo_route.json
-results/most_sumo_overlay/temporary_planning_graph.json
-results/most_sumo_overlay/route_overlay.png
-results/most_sumo_overlay/route_overlay_zoom.png
-```
-
-验证重点：
-
-- `planning_summary.json` 中 `graph_is_temporary=true`，`visualization_source=original_sumo_geometry`；
-- `sumo_route.json` 保存 `sumo_edge_ids`、`sumo_node_ids`、`lane_ids` 和每段 polyline；
-- `route_overlay.png` 是完整地图上的 SUMO lane geometry 路径叠加，不是 NetworkX scatter/节点图；
-- `route_overlay_zoom.png` 是路线附近的道路结构放大图；
-- 若 `require_sumo_load_check=true`，脚本会先用 headless `sumo` 加载 `.sumocfg` 或 `.net.xml`，失败时直接中止。
-
-## 软件闭环导航
-
-不使用 Noxim，只验证城市地图到 SNN wavefront 的闭环：
-
-```bash
-python experiments/run_most_navigation.py \
-  --config configs/most.yaml \
-  --loihi-config configs/brian2loihi.yaml \
-  --output results/most/navigation \
-  --num-pairs 3 \
-  --seed 0
-```
-
-输出中包含完整地图路径可视化：
-
-```text
-results/most/navigation/navigation_path_compare.png
-```
-
-## Dynamic City Navigation Demo
-
-这个 demo 用 `networkx.DiGraph` 跑一个城市道路级别的动态闭环导航，不接 CARLA，也不接 SUMO TraCI。
-
-它会读取 MoST 导出的 `graph.json`，用 Brian2Loihi wavefront 做初始和重规划；当道路拥塞时，边的 `delay_ms` 会增大，`state` 会切到 `congested` 或 `blocked`，可选的 `threshold_penalty` 也会被保留。
-
-运行方式：
-
-```bash
-python experiments/run_most_import.py --config configs/most.yaml
-
-python experiments/run_dynamic_city_navigation.py \
-  --config configs/dynamic_city_navigation.yaml
-```
-
-输出文件：
-
-```text
-results/dynamic_city_navigation/dynamic_step_logs.csv
-results/dynamic_city_navigation/dynamic_summary.json
-results/dynamic_city_navigation/congestion_events.json
-results/dynamic_city_navigation/final_route.json
-results/dynamic_city_navigation/frames/
-results/dynamic_city_navigation/preview_final.png
-```
-
-限制：
-
-- 这是 graph-level 的动态导航，不是真实车辆动力学；
-- 没有使用 SUMO TraCI；
-- “实时”指仿真闭环，不是硬实时；
-- Brian2Loihi 大图可能较慢，建议先用 `max_nodes=500~2000` 的 MoST 子图；
-- 当前主要通过 synaptic `delay_ms` 表达拥塞，`threshold_penalty` 只作为保留字段。
-
-## Dynamic SUMO Geometry Navigation Demo
-
-这个 demo 把动态导航放回原始 SUMO / MoST 道路几何上显示。它会在地图上随机生成背景车辆，根据每条道路的车辆密度更新拥塞状态，并把拥塞映射到 Brian2Loihi 规划图：
-
-```text
-随机车辆密度升高
-    -> edge delay_ms 增大
-    -> 严重拥堵时 edge state=blocked
-    -> target node threshold_penalty 记录路口压力
-    -> threshold_penalty 额外折算为进入该节点的 delay
-    -> Brian2Loihi wavefront 重新规划
-    -> 路径映射回 SUMO edge/lane/polyline
-    -> 原始 SUMO 几何地图动态 overlay
-```
-
-运行方式：
-
-```bash
-python experiments/run_dynamic_sumo_overlay_navigation.py \
-  --config configs/dynamic_sumo_overlay.yaml
-```
-
-如果当前机器的 SUMO CLI 不能运行，但要先验证 Python 软件链路：
+在项目根目录运行：
 
 ```bash
 python experiments/run_dynamic_sumo_overlay_navigation.py \
@@ -290,59 +97,125 @@ python experiments/run_dynamic_sumo_overlay_navigation.py \
   --skip-sumo-load-check
 ```
 
-输出文件：
-
-```text
-results/dynamic_sumo_overlay/dynamic_summary.json
-results/dynamic_sumo_overlay/dynamic_step_logs.json
-results/dynamic_sumo_overlay/latest_sumo_route.json
-results/dynamic_sumo_overlay/final_background_vehicles.json
-results/dynamic_sumo_overlay/dynamic_frames/
-results/dynamic_sumo_overlay/wavefront_frames/
-results/dynamic_sumo_overlay/dynamic_navigation.gif
-results/dynamic_sumo_overlay/wavefront_all.gif
-```
-
-可视化含义：
-
-- 灰色道路：原始 SUMO lane geometry；
-- 蓝色小点：随机背景车辆；
-- 橙色道路：拥堵道路；
-- 黑色道路：阻断道路；
-- 青色道路和彩色节点：Brian2Loihi spike wavefront；
-- 红色道路：当前规划路线。
-
-## 可选 NoC 验证
-
-NoC / Noxim 验证不是软件闭环导航的必要步骤。需要本地 Noxim 可用时再运行：
+如果使用当前机器上的 conda 解释器，也可以直接运行：
 
 ```bash
-python experiments/run_noc_validation.py \
-  --graph results/week2/graph.json \
-  --loihi-config configs/brian2loihi.yaml \
-  --noc-config configs/noxim.yaml \
-  --output results/week6 \
-  --num-pairs 20 \
-  --seed 0
+/opt/anaconda3/envs/brian2loihi/bin/python experiments/run_dynamic_sumo_overlay_navigation.py \
+  --config configs/dynamic_sumo_overlay.yaml \
+  --skip-sumo-load-check
 ```
 
-如果 Noxim 路径不可用，Python 实验仍会完成，并把 `noxim_status` 标记为 `skipped`。
+如果 SUMO 已安装并能正常加载 MoST 场景，去掉 `--skip-sumo-load-check`：
 
-## 新包结构
+```bash
+python experiments/run_dynamic_sumo_overlay_navigation.py \
+  --config configs/dynamic_sumo_overlay.yaml
+```
 
-新标准包入口是：
+## 输出文件
+
+默认输出目录由 `configs/dynamic_sumo_overlay.yaml` 控制：
 
 ```text
-src/nmn/
+results/dynamic_sumo_overlay/
+├── dynamic_summary.json
+├── dynamic_step_logs.json
+├── dynamic_navigation.gif
+├── wavefront_all.gif
+├── latest_sumo_route.json
+├── final_background_vehicles.json
+├── initial_temporary_planning_graph.json
+├── dynamic_frames/
+└── wavefront_frames/
 ```
 
-根目录旧包仍作为兼容入口保留，避免破坏已有脚本和测试。后续新增代码建议优先使用 `nmn.*` 命名空间。
+关键文件含义：
 
-## 文档
+- `dynamic_summary.json`：一次运行的总体统计，包括起终点、重规划次数、脉冲数、输出路径。
+- `dynamic_step_logs.json`：每个动态步的当前位置、是否重规划、拥塞边、阻塞边和路线。
+- `dynamic_navigation.gif`：车辆、拥塞、当前路线随时间变化的动态地图。
+- `wavefront_all.gif`：Brian2Loihi 脉冲波前在地图上的传播动画。
+- `latest_sumo_route.json`：最终一次成功规划映射回 SUMO edge/lane geometry 的路线。
+- `initial_temporary_planning_graph.json`：调试用临时计算图，不是最终地图表示。
 
-- [项目结构说明](docs/project_structure.md)
-- [数据格式说明](docs/data_format.md)
-- [运行手册](docs/runbook.md)
-- [重构审计报告](docs/refactor_audit.md)
-- [Loihi demo 详解](docs/loihi_planner_demos.md)
-- [项目解析](PROJECT_GUIDE.md)
+## 可视化图例
+
+- 深色细线：原始 SUMO 道路几何。
+- 红色粗线：当前规划路线。
+- 蓝色点：随机背景车辆。
+- 橙色线：拥堵道路。
+- 黑色线：阻塞道路。
+- 青色线/彩色点：Brian2Loihi wavefront 已传播到的边和神经元。
+- 绿色圆点：当前位置。
+- 紫色星标：目标位置。
+
+## 配置说明
+
+`configs/dynamic_sumo_overlay.yaml` 是主配置：
+
+- `map.root_dir`：MoST 数据集根目录。
+- `map.netxml_path`：指定 SUMO `.net.xml`；为 `null` 时自动在 `root_dir` 下寻找主地图。
+- `map.sumocfg_path`：SUMO 场景配置文件，用于地图加载检查。
+- `planning.max_nodes`：从 MoST 主图中裁剪出的最大规划节点数。数值越大地图越完整，但 Brian2Loihi 运行更慢。
+- `planning.max_steps`：动态导航步数上限。
+- `planning.replan_interval`：固定重规划间隔。
+- `traffic.num_vehicles`：随机背景车辆数量。
+- `traffic.num_hotspots`：车辆热点边数量，用于稳定制造可见拥堵。
+- `congestion.congested_density`：超过该密度后边延迟升高。
+- `congestion.blocked_density`：超过该密度后边变为阻塞，SNN 不再通过该边传播。
+- `congestion.delay_factor`：拥塞边延迟放大系数。
+- `congestion.threshold_penalty_ms`：拥塞映射到目标节点的额外阈值/延迟惩罚。
+- `visualization.wavefront_frames_per_replan`：每次重规划输出多少张 wavefront 帧。
+- `output.output_dir`：结果目录。
+
+`configs/brian2loihi.yaml` 控制 SNN 参数：
+
+- `threshold`：神经元发放阈值。
+- `weight`：突触权重，当前默认大于阈值，保证单次前驱脉冲可触发后继神经元。
+- `refractory_ms`：不应期，默认足够大，使每个神经元只记录首次到达。
+- `seed`：Brian2Loihi 运行种子。
+
+## 动态拥塞到 SNN 的映射
+
+当前实现是软件层近似，不依赖 SUMO TraCI 实时交通仿真：
+
+1. 在临时规划图边上随机生成背景车辆。
+2. 每一步车辆沿道路边前进，并在路口随机选择下一条非阻塞出边。
+3. 按 `车辆数 / 边容量` 计算密度。
+4. 密度超过 `congested_density` 时，提高该边 `delay_ms`。
+5. 密度超过 `blocked_density` 时，把边标记为 `blocked`。
+6. 拥塞还会增加目标节点的 `threshold_penalty`，并折算为进入该节点的额外延迟。
+7. Brian2Loihi wavefront 在下一次重规划时读取新的 `delay_ms` 和 `blocked` 状态，路线会随交通情况变化。
+
+## 运行测试
+
+```bash
+python -m pytest -q
+```
+
+当前测试只覆盖保留主线：
+
+- SUMO `.net.xml` 几何解析。
+- 临时规划图和 SUMO 路线映射。
+- 原始地图 overlay 可视化。
+- 随机车辆、拥塞、阻塞和 GIF 输出。
+- SUMO 命令可用性检查函数。
+
+## 设计约束
+
+- 不保留旧的硬件互连验证逻辑。
+- 不保留合成图生成器和旧 graph baseline 实验。
+- 不保留 Brian2Loihi 小型 demo。
+- 不把 `DiGraph` 当作主地图格式。
+- 不输出仅包含节点散点和边线段的 NetworkX 风格地图。
+- 不破坏 MoST/SUMO 原始道路几何。
+- `DiGraph` 只用于计算、SNN 编码和调试 JSON。
+
+## 后续优化方向
+
+这个精简版本的边界已经足够清楚，后续可以在此基础上逐步增强：
+
+- 用 SUMO TraCI 替换当前 Python 随机车辆模型，读取真实车辆位置和道路速度。
+- 把拥塞映射从简单 `delay_ms` 放大升级为更细的阈值、电流、延迟或抑制机制。
+- 增加交互式前端或地图播放器，实时播放 wavefront 和重规划过程。
+- 扩大 `planning.max_nodes`，并针对 Brian2Loihi 后端做批量突触构建优化。

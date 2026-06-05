@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 
+import networkx as nx
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,9 +17,6 @@ for path in (REPO_ROOT, SRC_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from dataset_import.most_importer import find_most_netxml
-from graph.graph_baseline import dijkstra_delay_path, sample_start_target_pairs
-from graph.graph_io import save_graph_json
 from loihi_planner.backend_check import check_brian2loihi_available
 from loihi_planner.loihi_config import load_brian2loihi_config
 from nmn.loihi import compute_path_cost, run_loihi_wavefront
@@ -27,6 +25,7 @@ from nmn.sumo import (
     apply_traffic_congestion,
     digraph_to_snn,
     draw_sumo_dynamic_frame,
+    find_sumo_netxml,
     most_to_digraph,
     path_to_sumo_route,
     run_sumo_map_load_check,
@@ -37,6 +36,52 @@ from nmn.sumo import (
     write_gif,
     write_json,
 )
+
+
+def _edge_delay(_source, _target, attrs: dict) -> float:
+    if attrs.get("state") == "blocked":
+        return float("inf")
+    return float(attrs.get("delay_ms", attrs.get("base_cost", 1.0)))
+
+
+def _dijkstra_delay_path(G: nx.DiGraph, start: int, target: int) -> tuple[list[int], float]:
+    path = nx.shortest_path(G, start, target, weight=_edge_delay)
+    cost = 0.0
+    for source, target_node in zip(path, path[1:]):
+        cost += float(G[source][target_node].get("delay_ms", 1))
+    return [int(node) for node in path], float(cost)
+
+
+def _sample_start_target_pairs(G: nx.DiGraph, *, num_pairs: int, seed: int) -> list[tuple[int, int]]:
+    nodes = list(G.nodes())
+    rng = __import__("random").Random(seed)
+    pairs: list[tuple[int, int]] = []
+    if len(nodes) < 2:
+        return pairs
+    attempts = max(num_pairs * 8, 32)
+    for _ in range(attempts):
+        start, target = rng.sample(nodes, 2)
+        if start == target:
+            continue
+        pairs.append((int(start), int(target)))
+        if len(pairs) >= num_pairs:
+            break
+    return pairs
+
+
+def _save_graph_json(G: nx.DiGraph, path: str | Path) -> None:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "directed": True,
+        "graph": dict(G.graph),
+        "nodes": [{"id": node, **dict(attrs)} for node, attrs in G.nodes(data=True)],
+        "edges": [
+            {"source": source, "target": target, **dict(attrs)}
+            for source, target, attrs in G.edges(data=True)
+        ],
+    }
+    output.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _resolve_path(value, config_dir: Path, *, for_output: bool = False) -> str | None:
@@ -85,12 +130,12 @@ def _load_config(config_path: str) -> dict:
 
 
 def _select_demo_pair(G, seed: int) -> tuple[int, int, list[int], float]:
-    candidates = sample_start_target_pairs(G, num_pairs=min(64, max(1, G.number_of_nodes() * 2)), seed=seed)
+    candidates = _sample_start_target_pairs(G, num_pairs=min(64, max(1, G.number_of_nodes() * 2)), seed=seed)
     best: tuple[int, int, list[int], float] | None = None
     best_score: tuple[float, int] | None = None
     for start, target in candidates:
         try:
-            path, cost = dijkstra_delay_path(G, start, target, delay_attr="delay_ms")
+            path, cost = _dijkstra_delay_path(G, start, target)
         except Exception:
             continue
         if len(path) < 2:
@@ -244,7 +289,7 @@ def main() -> int:
 
     netxml_path = config["map"].get("netxml_path")
     if netxml_path is None:
-        netxml_path = str(find_most_netxml(config["map"]["root_dir"]))
+        netxml_path = str(find_sumo_netxml(config["map"]["root_dir"]))
 
     sumo_load_check = None
     if bool(config["map"].get("require_sumo_load_check", True)) and not args.skip_sumo_load_check:
@@ -275,7 +320,7 @@ def main() -> int:
             planning_cfg.get("use_travel_time_if_speed_available", True)
         ),
     )
-    save_graph_json(graph, str(output_dir / "initial_temporary_planning_graph.json"))
+    _save_graph_json(graph, output_dir / "initial_temporary_planning_graph.json")
 
     start = _resolve_node_id(graph, planning_cfg.get("start"))
     target = _resolve_node_id(graph, planning_cfg.get("target"))
@@ -284,7 +329,7 @@ def main() -> int:
     if start is None or target is None:
         start, target, dijkstra_hint, dijkstra_cost = _select_demo_pair(graph, seed=seed)
     else:
-        dijkstra_hint, dijkstra_cost = dijkstra_delay_path(graph, start, target, delay_attr="delay_ms")
+        dijkstra_hint, dijkstra_cost = _dijkstra_delay_path(graph, start, target)
 
     vehicles = spawn_random_traffic_vehicles(
         graph,

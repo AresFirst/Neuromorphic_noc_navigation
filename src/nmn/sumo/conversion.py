@@ -10,7 +10,6 @@ from typing import Any
 
 import networkx as nx
 
-from nmn.dynamic.snn_cost_adapter import prepare_graph_for_snn_planning
 from nmn.loihi import infer_parent_trace_from_spikes, reconstruct_path_from_parent
 
 from .geometry import SumoEdgeGeometry, SumoMapGeometry, load_sumo_network_geometry
@@ -110,6 +109,38 @@ def _relabel_to_int_nodes(G: nx.DiGraph) -> nx.DiGraph:
     relabeled.graph["node_id_to_sumo_id"] = int_to_sumo
     relabeled.graph["sumo_node_id_to_node_id"] = sumo_to_int
     return relabeled
+
+
+def _positive_int(value: object, fallback: int) -> int:
+    try:
+        parsed = int(round(float(value)))
+    except (TypeError, ValueError):
+        return int(fallback)
+    return max(1, parsed)
+
+
+def prepare_graph_for_snn_planning(
+    G: nx.DiGraph,
+    *,
+    min_delay_ms: int = 1,
+    max_delay_ms: int | None = None,
+) -> nx.DiGraph:
+    """Return a copy with valid SNN delays and blocked edge states preserved."""
+    if min_delay_ms < 1:
+        raise ValueError("min_delay_ms must be positive")
+    if max_delay_ms is not None and max_delay_ms < min_delay_ms:
+        raise ValueError("max_delay_ms must be >= min_delay_ms")
+
+    prepared = G.copy()
+    for _source, _target, attrs in prepared.edges(data=True):
+        state = str(attrs.get("state", "normal"))
+        delay_ms = _positive_int(attrs.get("delay_ms", attrs.get("original_delay_ms", min_delay_ms)), min_delay_ms)
+        delay_ms = max(min_delay_ms, delay_ms)
+        if max_delay_ms is not None:
+            delay_ms = min(delay_ms, int(max_delay_ms))
+        attrs["delay_ms"] = int(delay_ms)
+        attrs["state"] = "blocked" if state == "blocked" else ("congested" if state == "congested" else "normal")
+    return prepared
 
 
 def most_to_digraph(

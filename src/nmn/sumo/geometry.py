@@ -15,6 +15,9 @@ from pathlib import Path
 
 Point2D = tuple[float, float]
 
+_EXCLUDED_NETXML_NAME_PARTS = ("plain", "edg", "nod", "typ")
+_PREFERRED_NETXML_NAME_PARTS = ("most", "monaco")
+
 
 @dataclass(frozen=True)
 class SumoNodeGeometry:
@@ -186,3 +189,29 @@ def load_sumo_network_geometry(
         )
 
     return SumoMapGeometry(netxml_path=str(path), nodes=nodes, edges=edges)
+
+
+def _filtered_netxml_files(search_root: Path) -> list[Path]:
+    if not search_root.exists():
+        return []
+    files: list[Path] = []
+    for path in search_root.rglob("*.net.xml"):
+        name = path.name.lower()
+        if any(part in name for part in _EXCLUDED_NETXML_NAME_PARTS):
+            continue
+        files.append(path)
+    return files
+
+
+def find_sumo_netxml(root_dir: str | Path) -> Path:
+    """Find the main SUMO `.net.xml` file under a local MoST/SUMO directory."""
+    root = Path(root_dir).expanduser()
+    scenario_candidates = _filtered_netxml_files(root / "scenario")
+    candidates = scenario_candidates or _filtered_netxml_files(root)
+    if not candidates:
+        raise FileNotFoundError(f"SUMO .net.xml not found under: {root}")
+    preferred = [
+        path for path in candidates if any(part in path.name.lower() for part in _PREFERRED_NETXML_NAME_PARTS)
+    ]
+    pool = preferred or candidates
+    return max(pool, key=lambda path: path.stat().st_size)
