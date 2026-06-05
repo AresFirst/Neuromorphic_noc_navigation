@@ -7,6 +7,9 @@
     "python.testing.pytestArgs": [
         "tests"
     ],
+    "python.analysis.extraPaths": [
+        "src"
+    ],
     "terminal.integrated.env.osx": {
         "PATH": "/opt/anaconda3/envs/brian2loihi/bin:${env:PATH}",
         "CONDA_DEFAULT_ENV": "brian2loihi"

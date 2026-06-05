@@ -10,10 +10,12 @@ from pathlib import Path
 
 import networkx as nx
 
-from nmn.loihi.parent_trace import infer_parent_trace_from_spikes
-from nmn.loihi.path_compare import compute_path_cost
-from nmn.loihi.path_reconstruction import reconstruct_path_from_parent
-from nmn.loihi.wavefront import run_loihi_wavefront
+from nmn.loihi import (
+    compute_path_cost,
+    infer_parent_trace_from_spikes,
+    reconstruct_path_from_parent,
+    run_loihi_wavefront,
+)
 
 from .congestion import CongestionController, CongestionEvent
 from .metrics import save_step_logs, summarize_dynamic_run

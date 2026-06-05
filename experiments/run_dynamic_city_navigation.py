@@ -23,12 +23,14 @@ from nmn.dynamic.closed_loop import (
     generate_congestion_events_on_route,
     run_dynamic_navigation_loop,
 )
-from nmn.dynamic.visualization import draw_dynamic_state
-from nmn.loihi.parent_trace import infer_parent_trace_from_spikes
-from nmn.loihi.path_compare import compute_path_cost
-from nmn.loihi.path_reconstruction import reconstruct_path_from_parent
-from nmn.loihi.wavefront import run_loihi_wavefront
 from nmn.dynamic.snn_cost_adapter import prepare_graph_for_snn_planning
+from nmn.dynamic.visualization import draw_dynamic_state
+from nmn.loihi import (
+    compute_path_cost,
+    infer_parent_trace_from_spikes,
+    reconstruct_path_from_parent,
+    run_loihi_wavefront,
+)
 
 
 def _resolve_path(value, config_dir: Path, *, for_output: bool = False) -> str | None:
