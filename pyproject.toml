@@ -12,4 +12,4 @@ requires-python = ">=3.10"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-filterwarnings = ["ignore::pyparsing.exceptions.PyparsingDeprecationWarning"]
+filterwarnings = ["ignore::DeprecationWarning:pyparsing.*"]

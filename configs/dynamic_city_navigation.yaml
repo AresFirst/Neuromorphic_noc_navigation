@@ -1,0 +1,28 @@
+graph:
+  graph_json: results/most/graph.json
+  fallback_to_synthetic_if_missing: false
+
+vehicle:
+  start: null
+  target: null
+  seed: 0
+
+dynamic:
+  max_steps: 100
+  replan_interval: 5
+  congestion_mode: delay
+  default_delay_factor: 5.0
+  num_random_congestion_events: 3
+  congestion_duration_steps: 20
+  congestion_on_initial_route: true
+
+loihi:
+  config_path: configs/brian2loihi.yaml
+
+visualization:
+  visualize: true
+  save_frames: true
+  max_draw_edges: 3000
+
+output:
+  output_dir: results/dynamic_city_navigation

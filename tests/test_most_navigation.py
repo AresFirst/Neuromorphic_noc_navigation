@@ -6,12 +6,19 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from experiments.run_most_navigation import main as run_most_navigation_main
 from graph.complex_graph_generator import generate_complex_graph
 from graph.graph_io import save_graph_json
+from loihi_planner.backend_check import check_brian2loihi_available
 
 
 def test_run_most_navigation_with_prebuilt_graph(tmp_path, monkeypatch):
+    status = check_brian2loihi_available()
+    if not status["available"]:
+        pytest.skip(f"Brian2Loihi unavailable: {status['error']}")
+
     graph = generate_complex_graph("community", 8, seed=2)
     graph_path = tmp_path / "graph.json"
     save_graph_json(graph, str(graph_path))

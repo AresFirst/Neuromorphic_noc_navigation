@@ -14,6 +14,6 @@
 
 from __future__ import annotations
 
-from . import datasets, graph, localization, loihi, noc, utils
+from . import datasets, graph, localization, loihi, dynamic, noc, utils
 
-__all__ = ["datasets", "graph", "localization", "loihi", "noc", "utils"]
+__all__ = ["datasets", "dynamic", "graph", "localization", "loihi", "noc", "utils"]

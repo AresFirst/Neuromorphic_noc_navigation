@@ -131,6 +131,40 @@ python experiments/run_most_navigation.py \
 results/most/navigation/navigation_path_compare.png
 ```
 
+## Dynamic City Navigation Demo
+
+这个 demo 用 `networkx.DiGraph` 跑一个城市道路级别的动态闭环导航，不接 CARLA，也不接 SUMO TraCI。
+
+它会读取 MoST 导出的 `graph.json`，用 Brian2Loihi wavefront 做初始和重规划；当道路拥塞时，边的 `delay_ms` 会增大，`state` 会切到 `congested` 或 `blocked`，可选的 `threshold_penalty` 也会被保留。
+
+运行方式：
+
+```bash
+python experiments/run_most_import.py --config configs/most.yaml
+
+python experiments/run_dynamic_city_navigation.py \
+  --config configs/dynamic_city_navigation.yaml
+```
+
+输出文件：
+
+```text
+results/dynamic_city_navigation/dynamic_step_logs.csv
+results/dynamic_city_navigation/dynamic_summary.json
+results/dynamic_city_navigation/congestion_events.json
+results/dynamic_city_navigation/final_route.json
+results/dynamic_city_navigation/frames/
+results/dynamic_city_navigation/preview_final.png
+```
+
+限制：
+
+- 这是 graph-level 的动态导航，不是真实车辆动力学；
+- 没有使用 SUMO TraCI；
+- “实时”指仿真闭环，不是硬实时；
+- Brian2Loihi 大图可能较慢，建议先用 `max_nodes=500~2000` 的 MoST 子图；
+- 当前主要通过 synaptic `delay_ms` 表达拥塞，`threshold_penalty` 只作为保留字段。
+
 ## 可选 NoC 验证
 
 NoC / Noxim 验证不是软件闭环导航的必要步骤。需要本地 Noxim 可用时再运行：
