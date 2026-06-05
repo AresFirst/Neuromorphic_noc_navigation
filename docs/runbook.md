@@ -181,13 +181,60 @@ results/dynamic_city_navigation/preview_final.png
 - 没有接 SUMO TraCI。
 - “实时”指仿真闭环，不是硬实时。
 
-## 9. Synthetic graph 基线
+## 9. 运行动态 SUMO 几何导航
+
+这个入口把随机车辆、拥塞、Brian2Loihi spike wavefront 和 SUMO 原始地图 overlay 放到同一个闭环里。
+
+正式运行：
+
+```bash
+python experiments/run_dynamic_sumo_overlay_navigation.py \
+  --config configs/dynamic_sumo_overlay.yaml
+```
+
+如果当前机器 SUMO CLI 暂时不可用：
+
+```bash
+python experiments/run_dynamic_sumo_overlay_navigation.py \
+  --config configs/dynamic_sumo_overlay.yaml \
+  --skip-sumo-load-check
+```
+
+输出：
+
+```text
+results/dynamic_sumo_overlay/dynamic_summary.json
+results/dynamic_sumo_overlay/dynamic_step_logs.json
+results/dynamic_sumo_overlay/latest_sumo_route.json
+results/dynamic_sumo_overlay/final_background_vehicles.json
+results/dynamic_sumo_overlay/dynamic_frames/
+results/dynamic_sumo_overlay/wavefront_frames/
+results/dynamic_sumo_overlay/dynamic_navigation.gif
+results/dynamic_sumo_overlay/wavefront_all.gif
+```
+
+可视化层含义：
+
+- 灰色道路：原始 SUMO lane geometry。
+- 蓝色小点：随机背景车辆。
+- 橙色道路：拥堵道路。
+- 黑色道路：阻断道路。
+- 青色道路和彩色节点：Brian2Loihi wavefront 已传播区域。
+- 红色道路：当前路线。
+
+拥塞映射规则：
+
+- 轻度拥堵：增加 edge `delay_ms`。
+- 严重拥堵：设置 edge `state="blocked"`，Brian2Loihi wavefront 会跳过该边。
+- 路口压力：写入 target node `threshold_penalty`，当前实现将其折算为进入该节点的额外 delay；这样能在当前 Brian2Loihi 同质阈值实现下稳定表达“更难发放”。
+
+## 10. Synthetic graph 基线
 
 ```bash
 python experiments/run_graph_baseline.py --config configs/graph.yaml --output results/week2
 ```
 
-## 10. Loihi wavefront / STDP / relay demo
+## 11. Loihi wavefront / STDP / relay demo
 
 ```bash
 python experiments/run_loihi_wavefront.py \
@@ -211,7 +258,7 @@ python experiments/run_dynamic_start_and_relay.py \
   --seed 0
 ```
 
-## 11. 可选 NoC / Noxim 验证
+## 12. 可选 NoC / Noxim 验证
 
 NoC 验证不是城市道路导航主线。需要本地 Noxim 可用时再运行：
 
@@ -227,7 +274,7 @@ python experiments/run_noc_validation.py \
 
 如果 Noxim 路径不可用，脚本应将 Noxim 状态标记为 skipped 或 failed，不应影响 MoST/SUMO 软件导航主线。
 
-## 12. 测试
+## 13. 测试
 
 推荐测试：
 

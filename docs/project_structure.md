@@ -19,6 +19,7 @@ src/nmn/
 ## 关键目录
 
 - `src/nmn/sumo/`：当前 MoST/SUMO overlay 导航的核心。读取 `.net.xml` 的 lane shape，生成临时 `DiGraph`，并把 SNN 输出路径映射回 SUMO edge/lane/polyline。
+- `src/nmn/sumo/dynamic.py`：随机背景车辆、交通密度统计、拥塞到 `delay_ms/state/threshold_penalty` 的映射、GIF 写出。
 - `src/nmn/dynamic/`：graph-level 动态城市导航闭环，不接 CARLA，也不接 SUMO TraCI。
 - `src/nmn/loihi/`：对 `loihi_planner/` 的静态 wrapper，解决 `nmn.loihi.*` 导入和 Pylance 解析问题。
 - `dataset_import/`：旧导入实现，负责 MoST / SUMO `.net.xml` 到标准 `networkx.DiGraph` 的导入与标准化。
@@ -52,6 +53,29 @@ results/most_sumo_overlay/sumo_route.json
 results/most_sumo_overlay/temporary_planning_graph.json
 results/most_sumo_overlay/route_overlay.png
 results/most_sumo_overlay/route_overlay_zoom.png
+```
+
+### 动态 SUMO 原始几何导航
+
+```text
+configs/dynamic_sumo_overlay.yaml
+experiments/run_dynamic_sumo_overlay_navigation.py
+src/nmn/sumo/dynamic.py
+src/nmn/sumo/visualization.py
+```
+
+用途：在 SUMO 原始地图上显示随机车辆、拥塞道路、Brian2Loihi spike wavefront 和随交通变化重规划的路线。
+
+主要输出：
+
+```text
+results/dynamic_sumo_overlay/dynamic_summary.json
+results/dynamic_sumo_overlay/dynamic_step_logs.json
+results/dynamic_sumo_overlay/latest_sumo_route.json
+results/dynamic_sumo_overlay/dynamic_frames/
+results/dynamic_sumo_overlay/wavefront_frames/
+results/dynamic_sumo_overlay/dynamic_navigation.gif
+results/dynamic_sumo_overlay/wavefront_all.gif
 ```
 
 ### MoST graph-level 导入与导航

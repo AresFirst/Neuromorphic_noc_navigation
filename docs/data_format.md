@@ -230,6 +230,67 @@ threshold_penalty: float
 mode: str
 ```
 
+## Dynamic SUMO overlay 输出
+
+`experiments/run_dynamic_sumo_overlay_navigation.py` 输出：
+
+```text
+results/dynamic_sumo_overlay/dynamic_summary.json
+results/dynamic_sumo_overlay/dynamic_step_logs.json
+results/dynamic_sumo_overlay/latest_sumo_route.json
+results/dynamic_sumo_overlay/final_background_vehicles.json
+results/dynamic_sumo_overlay/dynamic_frames/
+results/dynamic_sumo_overlay/wavefront_frames/
+results/dynamic_sumo_overlay/dynamic_navigation.gif
+results/dynamic_sumo_overlay/wavefront_all.gif
+```
+
+`final_background_vehicles.json` 中每辆车：
+
+```text
+vehicle_id: str
+edge_source: int | str
+edge_target: int | str
+progress: float
+speed: float
+```
+
+含义：
+
+- `edge_source` / `edge_target`：车辆当前所在计算图边。
+- `progress`：车辆在当前边上的进度，范围 `[0, 1)`。
+- `speed`：每个交通 step 前进的 edge progress。
+
+`dynamic_step_logs.json` 每个 step 的关键字段：
+
+```text
+step: int
+current_node: int
+target_node: int
+current_sumo_node_id: str
+target_sumo_node_id: str
+replanned: bool
+planning_success: bool | null
+route: list[int]
+remaining_route: list[int]
+sumo_edge_ids: list[str]
+num_congested_edges: int
+num_blocked_edges: int
+congested_edges: list[list[int]]
+blocked_edges: list[list[int]]
+num_vehicles: int
+num_spikes: int
+target_arrival_time_ms: float | null
+path_cost: float | null
+```
+
+拥塞映射规则：
+
+- 道路车辆密度超过 `congested_density`：edge `state="congested"`，`delay_ms` 增大。
+- 道路车辆密度超过 `blocked_density`：edge `state="blocked"`，Brian2Loihi wavefront 跳过该边。
+- 拥堵道路的 target node 写入 `threshold_penalty` 和 `traffic_threshold_delay_ms`。
+- 当前 Brian2Loihi object API 使用同质阈值，因此 per-node threshold pressure 会折算为进入该节点的额外 delay，使该节点更晚发放；严重拥堵通过 blocked edge 表达“不发放/不可达”。
+
 ## Spike trace
 
 SNN wavefront 输出中的核心结构是：

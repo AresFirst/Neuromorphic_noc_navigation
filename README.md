@@ -260,6 +260,58 @@ results/dynamic_city_navigation/preview_final.png
 - Brian2Loihi 大图可能较慢，建议先用 `max_nodes=500~2000` 的 MoST 子图；
 - 当前主要通过 synaptic `delay_ms` 表达拥塞，`threshold_penalty` 只作为保留字段。
 
+## Dynamic SUMO Geometry Navigation Demo
+
+这个 demo 把动态导航放回原始 SUMO / MoST 道路几何上显示。它会在地图上随机生成背景车辆，根据每条道路的车辆密度更新拥塞状态，并把拥塞映射到 Brian2Loihi 规划图：
+
+```text
+随机车辆密度升高
+    -> edge delay_ms 增大
+    -> 严重拥堵时 edge state=blocked
+    -> target node threshold_penalty 记录路口压力
+    -> threshold_penalty 额外折算为进入该节点的 delay
+    -> Brian2Loihi wavefront 重新规划
+    -> 路径映射回 SUMO edge/lane/polyline
+    -> 原始 SUMO 几何地图动态 overlay
+```
+
+运行方式：
+
+```bash
+python experiments/run_dynamic_sumo_overlay_navigation.py \
+  --config configs/dynamic_sumo_overlay.yaml
+```
+
+如果当前机器的 SUMO CLI 不能运行，但要先验证 Python 软件链路：
+
+```bash
+python experiments/run_dynamic_sumo_overlay_navigation.py \
+  --config configs/dynamic_sumo_overlay.yaml \
+  --skip-sumo-load-check
+```
+
+输出文件：
+
+```text
+results/dynamic_sumo_overlay/dynamic_summary.json
+results/dynamic_sumo_overlay/dynamic_step_logs.json
+results/dynamic_sumo_overlay/latest_sumo_route.json
+results/dynamic_sumo_overlay/final_background_vehicles.json
+results/dynamic_sumo_overlay/dynamic_frames/
+results/dynamic_sumo_overlay/wavefront_frames/
+results/dynamic_sumo_overlay/dynamic_navigation.gif
+results/dynamic_sumo_overlay/wavefront_all.gif
+```
+
+可视化含义：
+
+- 灰色道路：原始 SUMO lane geometry；
+- 蓝色小点：随机背景车辆；
+- 橙色道路：拥堵道路；
+- 黑色道路：阻断道路；
+- 青色道路和彩色节点：Brian2Loihi spike wavefront；
+- 红色道路：当前规划路线。
+
 ## 可选 NoC 验证
 
 NoC / Noxim 验证不是软件闭环导航的必要步骤。需要本地 Noxim 可用时再运行：

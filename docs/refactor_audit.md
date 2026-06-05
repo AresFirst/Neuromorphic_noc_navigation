@@ -46,10 +46,13 @@ MoST / SUMO net.xml
 
 - `src/nmn/sumo/geometry.py`
 - `src/nmn/sumo/conversion.py`
+- `src/nmn/sumo/dynamic.py`
 - `src/nmn/sumo/visualization.py`
 - `src/nmn/sumo/sumo_check.py`
 - `experiments/run_most_sumo_overlay_navigation.py`
+- `experiments/run_dynamic_sumo_overlay_navigation.py`
 - `configs/most_sumo_overlay.yaml`
+- `configs/dynamic_sumo_overlay.yaml`
 
 ## 3. 已完成的标准包入口
 
@@ -83,6 +86,7 @@ src/nmn/loihi/wavefront.py
 - 生成临时 `networkx.DiGraph`，边属性保留 SUMO edge/lane/shape 映射。
 - 将 SNN 输出路径映射回 SUMO edge ID 和 polyline。
 - 使用 SUMO lane/edge geometry 绘制最终 overlay，不使用 NetworkX scatter 作为最终地图。
+- 随机生成背景车辆，把车辆密度映射为 `delay_ms`、`state` 和 `threshold_penalty`，并输出动态帧/GIF。
 
 ## 4. 仍作为兼容实现保留的旧包
 
@@ -105,6 +109,7 @@ src/nmn/loihi/wavefront.py
 主要入口：
 
 - `experiments/run_most_sumo_overlay_navigation.py`：MoST/SUMO 原始几何 overlay 导航。
+- `experiments/run_dynamic_sumo_overlay_navigation.py`：随机车辆 + 拥塞 + Brian2Loihi wavefront 的动态 SUMO overlay 导航。
 - `experiments/run_dynamic_city_navigation.py`：graph-level 动态城市导航。
 - `experiments/run_most_import.py`：MoST `.net.xml` 到标准 `graph.json`。
 - `experiments/run_most_navigation.py`：MoST graph-level 软件闭环导航。
@@ -125,6 +130,7 @@ src/nmn/loihi/wavefront.py
 - `configs/brian2loihi.yaml`
 - `configs/most.yaml`
 - `configs/most_sumo_overlay.yaml`
+- `configs/dynamic_sumo_overlay.yaml`
 - `configs/dynamic_city_navigation.yaml`
 - `configs/noxim.yaml`
 
