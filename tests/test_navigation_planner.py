@@ -30,6 +30,8 @@ def test_toy_graph_runs_navigation_planner_with_cpu_compatible_wavefront():
     assert result.metadata["success"] is True
     assert result.metadata["backend"] == "cpu_reference"
     assert result.wavefront_frames
+    assert result.metadata["spike_times_by_node"] == {0: 0.0, 1: 1.0, 2: 3.0}
+    assert result.metadata["wavefront_time_max_ms"] == 3
 
 
 def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):

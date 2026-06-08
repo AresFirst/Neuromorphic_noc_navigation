@@ -206,19 +206,21 @@ OSM node id
 
 GUI 中：
 
-- 青色 CircleMarker：当前 frame 中已经发放过 spike 的 neuron。
-- 青色 PolyLine：当前 frame 中已经传播完成的 edge/synapse。
-- `Wavefront frame index`：wavefront 帧序号，不是目标到达标志。
-- `t=... ms`：该 frame 对应的 SNN/CPU wavefront 时间。
+- 青色 CircleMarker：当前 timestep 之前已经发放过 spike 的 neuron。
+- 橙色 CircleMarker：当前 timestep 新发放的 neuron。
+- 青色 PolyLine：当前 timestep 之前已经传播完成的 edge/synapse。
+- 橙色虚线 PolyLine：当前 timestep 正在传播中的 edge/synapse，即前驱 neuron 已发放，但延迟还没有结束。
+- `Wavefront timestep (ms)`：按毫秒拖动的 wavefront 时间滑块，用于观察神经元逐步激活过程。
+- `t=... ms`：当前 slider 对应的 SNN/CPU wavefront 时间。
 
-如果 `wavefront_steps=2`，那么 slider 最大值是 `1`，这是正常的：
+如果 wavefront 只传播到 `t=1 ms`，那么 slider 最大值是 `1`，这是正常的：
 
 ```text
-frame 0 -> index 0
-frame 1 -> index 1
+timestep 0 ms -> 起点 neuron 发放
+timestep 1 ms -> 波前传播到下一批可达 neuron
 ```
 
-是否到达终点不要看 frame index，要看：
+是否到达终点不要看 slider 最大值，要看：
 
 ```json
 "success": true
@@ -242,6 +244,30 @@ frame 1 -> index 1
 - `Car position` slider：只在存在最终路径时显示，用于手动移动小车。
 
 第一版小车不是自动播放动画，而是由 slider 控制路径上的位置。
+
+## Web 性能与卡顿处理
+
+Streamlit 的交互模型是：每次拖动 slider 都会重新运行页面脚本。Folium 地图也是重新生成一个 HTML/Leaflet 地图。因此，当道路边很多、激活点很多时，拖动 `Car position` 或 `Wavefront timestep (ms)` 会卡顿。
+
+本项目已做的优化：
+
+- 地图道路几何在加载 OSM 图后预计算，并保存在 `st.session_state` 中。
+- Folium 使用 `prefer_canvas=True`，大量线段会尽量走 canvas 渲染。
+- `st_folium(..., returned_objects=[])`，减少前端返回对象带来的开销。
+- 侧边栏提供 `Draw base roads`，可以临时关闭普通道路底图，只显示路径、wavefront 和 marker。
+- 侧边栏提供 `Road edges to draw`，限制普通道路绘制数量。
+- 侧边栏提供 `Wavefront nodes to draw`，限制激活 neuron 点数量。
+
+推荐设置：
+
+```text
+Road edges to draw      = 800 到 1500
+Wavefront nodes to draw = 300 到 800
+Draw base roads         = 关闭后拖动小车最快
+Bounding box            = 尽量只覆盖需要的区域
+```
+
+如果只是观察小车沿路径移动，可以关闭 `Draw base roads`。如果只是观察 SNN 扩散，可以降低 `Road edges to draw`，保留 wavefront 点和边。
 
 ## 有向道路与不可达问题
 
@@ -307,6 +333,8 @@ NavigationResult(
 - `path_length_m`：最终路径长度。
 - `path_travel_time_s`：最终路径估计通行时间。
 - `wavefront_steps`：GUI 中可视化的 wavefront frame 数。
+- `wavefront_time_max_ms`：GUI 中 `Wavefront timestep (ms)` 的最大时间。
+- `spike_times_by_node`：每个 node/neuron 的首次发放时间，用于按 timestep 重建 wavefront 状态。
 
 若 Brian2Loihi 后端不可用，导航层会自动降级到 CPU-compatible wavefront，以保证 Web 闭环仍然可以运行。
 
@@ -325,13 +353,14 @@ python -m pytest -q
 - Loihi delay 上限编码。
 - NavigationResult 路径回映射。
 - 不可达目标但 wavefront 仍有局部传播 frame。
+- GUI 侧按任意 timestep 重建 wavefront 激活节点、完成边和传播中边。
 - GUI 侧有向可达性提示。
 - 小型 toy graph 跑通导航 planner。
 
 当前验证结果：
 
 ```text
-10 passed
+11 passed
 ```
 
 ## 常用命令

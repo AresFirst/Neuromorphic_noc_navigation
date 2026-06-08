@@ -129,6 +129,8 @@ def run_navigation(
             "num_spikes": int(wavefront.get("num_spikes", 0) or 0),
             "active_neurons": int(wavefront.get("active_neurons", 0) or 0),
             "sim_time_ms": wavefront.get("sim_time_ms"),
+            "spike_times_by_node": spike_times,
+            "wavefront_time_max_ms": int(max((round(time_ms) for time_ms in spike_times.values()), default=0)),
             "path_length_m": _path_attr_sum(graph, path_nodes, "length"),
             "path_travel_time_s": _path_attr_sum(graph, path_nodes, "travel_time"),
             "path_cost_attr": cost_attr,

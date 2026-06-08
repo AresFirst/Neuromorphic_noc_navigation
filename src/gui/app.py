@@ -12,7 +12,10 @@ from maps import (
     osmnx_multidigraph_to_digraph,
     path_nodes_to_latlon,
 )
-from navigation import NavigationResult, run_navigation
+from navigation import NavigationResult, WavefrontFrame, run_navigation
+
+EdgePoints = list[tuple[int, int, list[tuple[float, float]]]]
+EdgePointLookup = dict[tuple[int, int], list[tuple[float, float]]]
 
 
 def _imports():
@@ -50,33 +53,153 @@ def _graph_bounds(graph: nx.DiGraph) -> tuple[float, float, float, float]:
     return max(lats), min(lats), max(lons), min(lons)
 
 
-def _add_network_edges(folium, fmap, graph: nx.DiGraph, max_edges: int) -> None:
-    for idx, (u, v) in enumerate(graph.edges()):
-        if idx >= max_edges:
-            break
+def _build_edge_points(graph: nx.DiGraph) -> EdgePoints:
+    edge_points: EdgePoints = []
+    for u, v in graph.edges():
         points = edge_geometry_to_latlon(graph, int(u), int(v))
         if len(points) >= 2:
-            folium.PolyLine(points, color="#64748b", weight=1, opacity=0.42).add_to(fmap)
+            edge_points.append((int(u), int(v), points))
+    return edge_points
 
 
-def _add_wavefront(folium, fmap, graph: nx.DiGraph, result: NavigationResult, frame_index: int) -> None:
-    if not result.wavefront_frames:
-        return
-    frame = result.wavefront_frames[min(frame_index, len(result.wavefront_frames) - 1)]
-    for u, v in frame.active_edges:
-        points = edge_geometry_to_latlon(graph, u, v)
+def _edge_point_lookup(edge_points: EdgePoints) -> EdgePointLookup:
+    return {(u, v): points for u, v, points in edge_points}
+
+
+def _points_for_edge(
+    edge_lookup: EdgePointLookup,
+    graph: nx.DiGraph,
+    u: int,
+    v: int,
+) -> list[tuple[float, float]]:
+    points = edge_lookup.get((int(u), int(v)))
+    if points is not None:
+        return points
+    return edge_geometry_to_latlon(graph, int(u), int(v))
+
+
+def _add_network_edges(folium, fmap, edge_points: EdgePoints, max_edges: int) -> None:
+    for idx, (_u, _v, points) in enumerate(edge_points):
+        if idx >= max_edges:
+            break
+        folium.PolyLine(points, color="#64748b", weight=1, opacity=0.34).add_to(fmap)
+
+
+def _spike_times_by_node(result: NavigationResult) -> dict[int, float]:
+    raw = result.metadata.get("spike_times_by_node") or {}
+    return {int(node): float(time_ms) for node, time_ms in raw.items()}
+
+
+def _wavefront_frame_at_time(graph: nx.DiGraph, result: NavigationResult, time_ms: int) -> WavefrontFrame:
+    spike_times = _spike_times_by_node(result)
+    if not spike_times:
+        if not result.wavefront_frames:
+            return WavefrontFrame(t=int(time_ms), active_nodes=[], active_edges=[])
+        candidates = [frame for frame in result.wavefront_frames if frame.t <= int(time_ms)]
+        return candidates[-1] if candidates else result.wavefront_frames[0]
+
+    t = int(time_ms)
+    active_nodes = sorted(int(node) for node, spike_time in spike_times.items() if spike_time <= t)
+    active_node_set = set(active_nodes)
+    active_edges: list[tuple[int, int]] = []
+    for u, v, attrs in graph.edges(data=True):
+        if int(u) not in spike_times or int(v) not in active_node_set:
+            continue
+        source_time = float(spike_times[int(u)])
+        delay = float(attrs.get("delay_ms", 1.0))
+        if source_time + delay <= float(t) + 1e-9:
+            active_edges.append((int(u), int(v)))
+    return WavefrontFrame(t=t, active_nodes=active_nodes, active_edges=active_edges)
+
+
+def _wavefront_inflight_edges_at_time(graph: nx.DiGraph, result: NavigationResult, time_ms: int) -> list[tuple[int, int]]:
+    spike_times = _spike_times_by_node(result)
+    if not spike_times:
+        return []
+    t = float(time_ms)
+    inflight: list[tuple[int, int]] = []
+    for u, v, attrs in graph.edges(data=True):
+        source_time = spike_times.get(int(u))
+        if source_time is None or source_time > t:
+            continue
+        delay = float(attrs.get("delay_ms", 1.0))
+        arrival = source_time + delay
+        target_time = spike_times.get(int(v))
+        if source_time <= t < arrival and (target_time is None or target_time > t):
+            inflight.append((int(u), int(v)))
+    return inflight
+
+
+def _newly_active_nodes_at_time(result: NavigationResult, time_ms: int) -> set[int]:
+    return {
+        int(node)
+        for node, spike_time in _spike_times_by_node(result).items()
+        if int(round(float(spike_time))) == int(time_ms)
+    }
+
+
+def _add_wavefront_timestep(
+    folium,
+    fmap,
+    graph: nx.DiGraph,
+    result: NavigationResult,
+    time_ms: int,
+    edge_lookup: EdgePointLookup,
+    max_nodes: int,
+) -> WavefrontFrame:
+    if not result.wavefront_frames and not result.metadata.get("spike_times_by_node"):
+        return WavefrontFrame(t=int(time_ms), active_nodes=[], active_edges=[])
+
+    frame = _wavefront_frame_at_time(graph, result, int(time_ms))
+    for u, v in _wavefront_inflight_edges_at_time(graph, result, int(time_ms)):
+        points = _points_for_edge(edge_lookup, graph, u, v)
         if len(points) >= 2:
-            folium.PolyLine(points, color="#06b6d4", weight=2, opacity=0.55).add_to(fmap)
-    for node in frame.active_nodes:
+            folium.PolyLine(
+                points,
+                color="#f59e0b",
+                weight=3,
+                opacity=0.62,
+                dash_array="5,7",
+            ).add_to(fmap)
+
+    for u, v in frame.active_edges:
+        points = _points_for_edge(edge_lookup, graph, u, v)
+        if len(points) >= 2:
+            folium.PolyLine(points, color="#06b6d4", weight=2, opacity=0.58).add_to(fmap)
+
+    newly_active = _newly_active_nodes_at_time(result, int(time_ms))
+    ordered_nodes = sorted(newly_active) + [node for node in frame.active_nodes if node not in newly_active]
+    for node in ordered_nodes[:max_nodes]:
         attrs = graph.nodes[node]
+        is_new = node in newly_active
         folium.CircleMarker(
             location=(float(attrs["lat"]), float(attrs["lon"])),
-            radius=3,
-            color="#0e7490",
+            radius=5 if is_new else 3,
+            color="#f97316" if is_new else "#0e7490",
             fill=True,
-            fill_opacity=0.72,
-            weight=0,
+            fill_opacity=0.85 if is_new else 0.58,
+            weight=1 if is_new else 0,
         ).add_to(fmap)
+    return frame
+
+
+def _wavefront_time_limit(result: NavigationResult | None) -> int:
+    if result is None:
+        return 0
+    value = result.metadata.get("wavefront_time_max_ms")
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        pass
+    return max((int(frame.t) for frame in result.wavefront_frames), default=0)
+
+
+def _wavefront_time_caption(frame: WavefrontFrame, max_time_ms: int, drawn_node_count: int) -> str:
+    clipped = "" if drawn_node_count >= len(frame.active_nodes) else f", drawn_nodes={drawn_node_count}"
+    return (
+        f"Wavefront timestep t={frame.t}/{max_time_ms} ms, "
+        f"active_nodes={len(frame.active_nodes)}{clipped}, active_edges={len(frame.active_edges)}"
+    )
 
 
 def _add_path_and_markers(
@@ -181,6 +304,8 @@ def main() -> None:
         east = st.number_input("East", value=139.7160, format="%.6f")
         west = st.number_input("West", value=139.6850, format="%.6f")
         max_edges = st.slider("Road edges to draw", 200, 8000, 2500, 100)
+        draw_base_roads = st.checkbox("Draw base roads", value=True)
+        max_wavefront_nodes = st.slider("Wavefront nodes to draw", 50, 3000, 700, 50)
         use_loihi = st.checkbox("Use Brian2Loihi backend", value=True)
         load_clicked = st.button("Load OSM Map", type="primary")
 
@@ -194,6 +319,8 @@ def main() -> None:
                     (float(north), float(south), float(east), float(west)),
                     network_type,
                 )
+                st.session_state.road_edge_points = _build_edge_points(st.session_state.road_graph)
+                st.session_state.edge_point_lookup = _edge_point_lookup(st.session_state.road_edge_points)
                 st.session_state.navigation_result = None
         except Exception as exc:
             st.error(
@@ -206,6 +333,11 @@ def main() -> None:
         return
 
     graph: nx.DiGraph = st.session_state.road_graph
+    if "road_edge_points" not in st.session_state or "edge_point_lookup" not in st.session_state:
+        st.session_state.road_edge_points = _build_edge_points(graph)
+        st.session_state.edge_point_lookup = _edge_point_lookup(st.session_state.road_edge_points)
+    edge_points: EdgePoints = st.session_state.road_edge_points
+    edge_lookup: EdgePointLookup = st.session_state.edge_point_lookup
     default_start_lat, default_start_lon, default_goal_lat, default_goal_lon = _default_points(graph)
 
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -237,34 +369,43 @@ def main() -> None:
     car_index = 0
     if len(path_points) > 1:
         car_index = st.slider("Car position", 0, len(path_points) - 1, 0)
-    wave_idx = 0
+    wave_time_ms = 0
+    wavefront_frame = WavefrontFrame(t=0, active_nodes=[], active_edges=[])
+    max_wave_time_ms = _wavefront_time_limit(result)
     if result and result.wavefront_frames:
         if not result.metadata.get("success"):
             st.warning("No final path was found. The wavefront frames below show partial propagation only.")
-        if len(result.wavefront_frames) > 1:
-            wave_idx = st.slider(
-                "Wavefront frame index",
+        if max_wave_time_ms > 0:
+            wave_time_ms = st.slider(
+                "Wavefront timestep (ms)",
                 0,
-                len(result.wavefront_frames) - 1,
-                len(result.wavefront_frames) - 1,
+                max_wave_time_ms,
+                max_wave_time_ms,
             )
         else:
-            wave_idx = 0
-        frame = result.wavefront_frames[wave_idx]
-        st.caption(
-            f"Wavefront frame {wave_idx}/{len(result.wavefront_frames) - 1}, "
-            f"t={frame.t} ms, active_nodes={len(frame.active_nodes)}, active_edges={len(frame.active_edges)}"
-        )
+            wave_time_ms = 0
 
     center = _graph_center(graph)
-    fmap = folium.Map(location=center, zoom_start=14, tiles=tiles)
-    _add_network_edges(folium, fmap, graph, int(max_edges))
+    fmap = folium.Map(location=center, zoom_start=14, tiles=tiles, prefer_canvas=True, control_scale=True)
+    if draw_base_roads:
+        _add_network_edges(folium, fmap, edge_points, int(max_edges))
     if result:
-        _add_wavefront(folium, fmap, graph, result, wave_idx)
+        wavefront_frame = _add_wavefront_timestep(
+            folium,
+            fmap,
+            graph,
+            result,
+            wave_time_ms,
+            edge_lookup,
+            int(max_wavefront_nodes),
+        )
     _add_path_and_markers(folium, fmap, graph, result, start_node, goal_node, car_index)
     _fit_map_bounds(fmap, graph, path_points)
 
-    st_folium(fmap, width=None, height=720)
+    if result and result.wavefront_frames:
+        st.caption(_wavefront_time_caption(wavefront_frame, max_wave_time_ms, int(max_wavefront_nodes)))
+
+    st_folium(fmap, width=None, height=720, returned_objects=[])
 
     metric_cols = st.columns(6)
     metric_cols[0].metric("Start node", str(start_node))
