@@ -6,7 +6,3 @@ __pycache__/
 .pytest_cache/
 .matplotlib-cache/
 cache/
-
-results/
-data/osm_cache/
-datasets/
