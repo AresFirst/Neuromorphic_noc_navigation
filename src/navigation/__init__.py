@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+# navigation 包是 GUI 调用 SNN 规划的主入口，隐藏 Loihi/CPU fallback 的细节。
 from .planner import run_navigation
 from .result import NavigationResult, WavefrontFrame
 
+# 对外结果结构固定为 NavigationResult/WavefrontFrame，便于 GUI 和测试统一消费。
 __all__ = ["NavigationResult", "WavefrontFrame", "run_navigation"]

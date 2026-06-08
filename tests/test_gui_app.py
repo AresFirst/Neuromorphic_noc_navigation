@@ -14,6 +14,7 @@ from navigation import NavigationResult, WavefrontFrame
 
 
 def test_reachability_status_detects_reverse_only_route():
+    # 单行道场景：反向可达不等于当前 start->goal 可达，GUI 应给出明确提示。
     graph = nx.DiGraph()
     graph.add_edge(1, 0)
     graph.add_edge(0, 2)
@@ -25,6 +26,7 @@ def test_reachability_status_detects_reverse_only_route():
 
 
 def test_reachability_status_accepts_directed_route():
+    # 正向路径存在时，GUI 可以继续运行 SNN navigation。
     graph = nx.DiGraph()
     graph.add_edge(0, 1)
 
@@ -35,6 +37,7 @@ def test_reachability_status_accepts_directed_route():
 
 
 def test_wavefront_frame_at_arbitrary_timestep():
+    # GUI slider 可以停在任意整数时间点，因此需要从 spike times 重建中间帧。
     graph = nx.DiGraph()
     graph.add_edge(0, 1, delay_ms=2)
     graph.add_edge(1, 2, delay_ms=2)

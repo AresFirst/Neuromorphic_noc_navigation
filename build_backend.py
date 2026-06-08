@@ -23,10 +23,12 @@ DIST_NAME = "neuromorphic_osm_snn_navigation"
 WHEEL_TAG = "py3-none-any"
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
-TOP_LEVEL_PACKAGES = ["gui", "loihi_planner", "maps", "navigation", "nmn", "snn"]
+# editable wheel 的 top_level.txt 需要列出可直接 import 的顶层包。
+TOP_LEVEL_PACKAGES = ["gui", "loihi_planner", "maps", "navigation", "nmn", "snn", "traffic"]
 
 
 def _dist_info_dir() -> str:
+    # wheel 规范要求 metadata 放在 <name>-<version>.dist-info 目录。
     return f"{DIST_NAME}-{VERSION}.dist-info"
 
 
@@ -35,6 +37,7 @@ def _wheel_name() -> str:
 
 
 def _metadata_text() -> str:
+    # 只写最小 METADATA 字段，避免引入 setuptools/hatchling 等外部构建依赖。
     return (
         "Metadata-Version: 2.1\n"
         f"Name: {NAME}\n"
@@ -44,6 +47,7 @@ def _metadata_text() -> str:
 
 
 def _wheel_text() -> str:
+    # py3-none-any 表示纯 Python 包，不绑定平台和 Python ABI。
     return (
         "Wheel-Version: 1.0\n"
         "Generator: build_backend\n"
@@ -53,19 +57,23 @@ def _wheel_text() -> str:
 
 
 def _top_level_text() -> str:
+    # top_level.txt 让安装工具知道本项目暴露哪些 import 包。
     return "\n".join(TOP_LEVEL_PACKAGES) + "\n"
 
 
 def get_requires_for_build_wheel(config_settings=None):  # noqa: D401
+    # 离线构建关键点：构建 wheel 不要求下载任何额外依赖。
     return []
 
 
 def get_requires_for_build_editable(config_settings=None):  # noqa: D401
+    # editable 安装同样不声明构建依赖，减少环境问题。
     return []
 
 
 def _metadata_bytes() -> dict[str, bytes]:
     dist_info = _dist_info_dir()
+    # .pth 文件把仓库根目录和 src 目录加入 site-packages 搜索路径，实现 editable 行为。
     return {
         f"{dist_info}/METADATA": _metadata_text().encode("utf-8"),
         f"{dist_info}/WHEEL": _wheel_text().encode("utf-8"),
@@ -75,6 +83,7 @@ def _metadata_bytes() -> dict[str, bytes]:
 
 
 def _record_bytes(payload: dict[str, bytes]) -> bytes:
+    # RECORD 是 wheel 必需清单，记录每个文件的 hash 和大小。
     rows: list[list[str]] = []
     for path, data in payload.items():
         digest = hashlib.sha256(data).digest()
@@ -89,6 +98,7 @@ def _record_bytes(payload: dict[str, bytes]) -> bytes:
 
 
 def _build_wheel_file(wheel_directory: str | Path) -> str:
+    # 生成一个最小 wheel：只包含 metadata、top_level、.pth 和 RECORD。
     wheel_directory = Path(wheel_directory)
     wheel_directory.mkdir(parents=True, exist_ok=True)
     wheel_path = wheel_directory / _wheel_name()
@@ -97,6 +107,7 @@ def _build_wheel_file(wheel_directory: str | Path) -> str:
     payload[f"{_dist_info_dir()}/RECORD"] = _record_bytes(payload)
 
     with ZipFile(wheel_path, "w", compression=ZIP_DEFLATED) as zf:
+        # ZipFile.writestr 直接写入内存中的 metadata，不扫描源码文件。
         for path, data in payload.items():
             zf.writestr(path, data)
     return wheel_path.name
@@ -111,6 +122,7 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
 
 
 def _write_metadata_dir(metadata_directory: str | Path) -> str:
+    # prepare_metadata_* 只生成 dist-info 目录，供 pip 在构建前读取项目信息。
     metadata_directory = Path(metadata_directory)
     dist_info = metadata_directory / _dist_info_dir()
     dist_info.mkdir(parents=True, exist_ok=True)

@@ -24,8 +24,10 @@ def compute_path_cost(G, path: list[int], weight: str = "base_cost") -> float:
         return 0.0
 
     total = 0.0
+    # 逐边累加指定权重；这里不重新寻路，只验证/度量已经回溯出的路径。
     for source, target in zip(path, path[1:]):
         if not G.has_edge(source, target):
+            # parent trace 如果产生了图中不存在的边，应立即暴露为错误。
             raise ValueError(f"Path contains missing edge ({source}, {target})")
         total += float(G[source][target].get(weight, 0.0))
     return float(total)

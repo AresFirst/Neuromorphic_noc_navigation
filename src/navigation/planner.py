@@ -16,6 +16,7 @@ from .result import NavigationResult, WavefrontFrame
 
 
 def _path_attr_sum(graph: nx.DiGraph, path_nodes: list[int], attr: str) -> float:
+    # 用于 GUI 展示路径总长度/总旅行时间；只读取图边属性，不参与路径选择。
     if len(path_nodes) < 2:
         return 0.0
     total = 0.0
@@ -31,14 +32,17 @@ def _wavefront_frames(
     *,
     delay_attr: str,
 ) -> list[WavefrontFrame]:
+    # 后端输出的是每个 neuron 的首次发放时间；GUI 需要按时间组织的 frame。
     if not spike_times:
         return []
+    # 只在实际发生 spike 的时间点生成 frame，避免大地图上产生过多空帧。
     times = sorted({int(round(time_ms)) for time_ms in spike_times.values()})
     frames: list[WavefrontFrame] = []
     for t in times:
         active_nodes = sorted(int(node) for node, time_ms in spike_times.items() if float(time_ms) <= float(t))
         active_node_set = set(active_nodes)
         active_edges: list[tuple[int, int]] = []
+        # 一条边只有在源节点已发放、目标节点已发放、且传播延迟已走完时才算 active。
         for u, v, attrs in graph.edges(data=True):
             if u not in active_node_set or v not in active_node_set:
                 continue
@@ -63,6 +67,7 @@ def run_navigation(
     """Run the SNN pipeline and return a standard navigation result."""
     config = loihi_config or {}
     started = time.perf_counter()
+    # 第一阶段：运行 Brian2Loihi 或 CPU 参考 wavefront，得到每个节点的首次 spike 时间。
     wavefront = run_wavefront(
         graph,
         int(start_node),
@@ -76,6 +81,7 @@ def run_navigation(
     )
     loihi_error = None
     if use_loihi and not wavefront.get("success"):
+        # Loihi 后端不可用或失败时自动降级到 CPU reference，保证 GUI 闭环仍可运行。
         loihi_error = wavefront.get("error")
         wavefront = run_wavefront(
             graph,
@@ -90,6 +96,7 @@ def run_navigation(
         )
     elapsed = time.perf_counter() - started
 
+    # 统一把后端返回的 key 转成 int，避免 GraphML 字符串节点和 JSON 显示造成混乱。
     spike_times = {
         int(node): float(time_ms)
         for node, time_ms in (wavefront.get("spike_times_by_neuron") or {}).items()
@@ -99,12 +106,14 @@ def run_navigation(
     error = wavefront.get("error")
     if wavefront.get("success"):
         try:
+            # 第二阶段：用 spike 时间和图拓扑推断每个节点的父节点。
             parent_trace = infer_parent_trace_from_spikes(
                 graph,
                 spike_times,
                 int(start_node),
                 delay_attr=delay_attr,
             )
+            # 第三阶段：从 goal 沿 parent_trace 回溯到 start，得到最终路径。
             path_nodes = reconstruct_path_from_parent(parent_trace, int(start_node), int(goal_node))
             total_cost = compute_path_cost(graph, path_nodes, weight=cost_attr)
         except Exception as exc:
@@ -112,6 +121,7 @@ def run_navigation(
             path_nodes = []
 
     path_edges = [(int(u), int(v)) for u, v in zip(path_nodes, path_nodes[1:])]
+    # 返回统一结果对象，GUI、测试和后续 API 都只依赖这个结构。
     return NavigationResult(
         start_node=int(start_node),
         goal_node=int(goal_node),

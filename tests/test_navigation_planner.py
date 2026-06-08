@@ -8,6 +8,7 @@ from navigation import NavigationResult, run_navigation
 
 
 def _toy_graph() -> nx.DiGraph:
+    # 三节点 toy graph：0->1->2 虽然边数更多，但 cost/delay 总和优于直达边 0->2。
     graph = nx.DiGraph()
     graph.add_node(0, lat=35.0, lon=139.0, x=139.0, y=35.0, snn_neuron_index=0)
     graph.add_node(1, lat=35.1, lon=139.1, x=139.1, y=35.1, snn_neuron_index=1)
@@ -19,6 +20,7 @@ def _toy_graph() -> nx.DiGraph:
 
 
 def test_toy_graph_runs_navigation_planner_with_cpu_compatible_wavefront():
+    # 在无 Loihi 依赖的 CPU reference 上验证完整 NavigationResult 闭环。
     result = run_navigation(_toy_graph(), 0, 2, use_loihi=False)
 
     assert isinstance(result, NavigationResult)
@@ -35,9 +37,11 @@ def test_toy_graph_runs_navigation_planner_with_cpu_compatible_wavefront():
 
 
 def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):
+    # 模拟 Loihi 后端失败，确认 run_navigation 会自动降级到 CPU reference。
     calls: list[bool] = []
 
     def fake_run_wavefront(graph, start_node, goal_node, *, use_loihi, **_kwargs):
+        # 第一次 use_loihi=True 返回失败；第二次 use_loihi=False 返回可用 spike times。
         calls.append(bool(use_loihi))
         if use_loihi:
             return {
@@ -68,6 +72,7 @@ def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):
 
 
 def test_unreachable_goal_can_still_have_two_wavefront_frames():
+    # 不可达并不代表没有 wavefront：起点和可达邻居仍会发放，目标不会发放。
     graph = nx.DiGraph()
     graph.add_node(0, lat=0.0, lon=0.0, x=0.0, y=0.0, snn_neuron_index=0)
     graph.add_node(1, lat=0.0, lon=1.0, x=1.0, y=0.0, snn_neuron_index=1)
