@@ -1,4 +1,4 @@
-"""Minimal Brian2Loihi wavefront API used by SUMO navigation."""
+"""Minimal Brian2Loihi wavefront API used by OSM navigation."""
 
 from __future__ import annotations
 

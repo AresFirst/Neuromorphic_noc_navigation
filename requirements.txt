@@ -2,8 +2,14 @@
 numpy
 networkx
 pyyaml
-matplotlib
-pillow
+pandas
+requests
+osmnx
+geopandas
+shapely
+folium
+streamlit
+streamlit-folium
 
 # Brian2Loihi planner
 brian2

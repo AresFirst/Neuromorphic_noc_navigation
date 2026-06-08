@@ -1,7 +1,7 @@
-"""Minimal SUMO/Brian2Loihi navigation package."""
+"""Compatibility namespace for the Brian2Loihi wavefront API."""
 
 from __future__ import annotations
 
-from . import loihi, sumo
+from . import loihi
 
-__all__ = ["loihi", "sumo"]
+__all__ = ["loihi"]

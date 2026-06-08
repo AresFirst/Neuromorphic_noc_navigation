@@ -1,1 +1,1 @@
-"""Tests for the reduced SUMO/MoST navigation pipeline."""
+"""Tests for the OSM/SNN navigation pipeline."""

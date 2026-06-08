@@ -1,5 +1,5 @@
 # Brian2Loihi SNN planner configuration.
-# Used by experiments/run_dynamic_sumo_overlay_navigation.py.
+# Used by navigation.run_navigation and the Streamlit GUI.
 
 # SNN 后端选择。目前固定为 brian2loihi
 # brian2loihi: 使用 brian2-loihi 包的 Loihi 兼容 LIF 神经元模型

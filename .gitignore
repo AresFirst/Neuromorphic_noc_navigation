@@ -1,8 +1,12 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.DS_Store
 
 .pytest_cache/
 .matplotlib-cache/
+cache/
 
 results/
+data/osm_cache/
+datasets/

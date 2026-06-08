@@ -17,13 +17,13 @@ import io
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
-NAME = "neuromorphic-sumo-navigation"
+NAME = "neuromorphic-osm-snn-navigation"
 VERSION = "0.1.0"
-DIST_NAME = "neuromorphic_sumo_navigation"
+DIST_NAME = "neuromorphic_osm_snn_navigation"
 WHEEL_TAG = "py3-none-any"
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
-TOP_LEVEL_PACKAGES = ["loihi_planner", "nmn"]
+TOP_LEVEL_PACKAGES = ["gui", "loihi_planner", "maps", "navigation", "nmn", "snn"]
 
 
 def _dist_info_dir() -> str:
@@ -39,7 +39,7 @@ def _metadata_text() -> str:
         "Metadata-Version: 2.1\n"
         f"Name: {NAME}\n"
         f"Version: {VERSION}\n"
-        "Summary: SUMO/MoST city-road navigation with Brian2Loihi wavefront replanning\n"
+        "Summary: Real OSM road-map navigation with Brian2Loihi wavefront planning and a Streamlit GUI\n"
     )
 
 
@@ -70,7 +70,7 @@ def _metadata_bytes() -> dict[str, bytes]:
         f"{dist_info}/METADATA": _metadata_text().encode("utf-8"),
         f"{dist_info}/WHEEL": _wheel_text().encode("utf-8"),
         f"{dist_info}/top_level.txt": _top_level_text().encode("utf-8"),
-        "neuromorphic_sumo_navigation.pth": (str(ROOT) + "\n" + str(SRC) + "\n").encode("utf-8"),
+        "neuromorphic_osm_snn_navigation.pth": (str(ROOT) + "\n" + str(SRC) + "\n").encode("utf-8"),
     }
 
 
