@@ -62,6 +62,245 @@ OpenStreetMap / OSMnx
     └── test_traffic_simulator.py
 ```
 
+## 核心代码文件用途
+
+### 入口文件
+
+- `app.py`
+
+  Web GUI 的根入口。用户运行：
+
+  ```bash
+  streamlit run app.py
+  ```
+
+  时，实际会进入 `src/gui/app.py` 中的 `main()`。这个文件只负责把项目根目录和 `src/` 加入 Python import 路径，并转发到正式 GUI。
+
+- `app_demo.py`
+
+  独立实验 demo。它不走当前项目的完整模块化 pipeline，而是在一个文件里直接完成 OSMnx 下载、Brian2 wavefront、Folium 绘图和 Streamlit 页面展示。它适合用来快速检查环境是否能跑通，但正式功能以 `app.py` 和 `src/gui/app.py` 为准。
+
+- `build_backend.py`
+
+  轻量级本地构建后端，用于支持：
+
+  ```bash
+  pip install -e .
+  ```
+
+  它不参与导航算法，只是让项目在离线或最小依赖环境下也能以 editable 方式安装。
+
+### GUI 层
+
+- `src/gui/app.py`
+
+  当前 Web 页面主实现。负责：
+
+  - Streamlit 侧边栏参数输入。
+  - OSM 地图加载按钮。
+  - bbox / place name 输入。
+  - 起点和终点经纬度输入。
+  - 起终点 snap 到最近 OSM 道路节点。
+  - 调用 `run_navigation()` 执行 SNN wavefront。
+  - Folium 地图绘制。
+  - 普通道路、最终路径、wavefront、交通拥堵、小车 marker 的 overlay。
+  - wavefront timestep slider。
+  - car position slider。
+  - 模拟交通 `Step Traffic + Replan` 动态重规划。
+  - 页面底部指标和 JSON 调试信息。
+
+  这个文件是用户实际交互最多的地方，也是把地图、SNN、交通和可视化串起来的闭环入口。
+
+### 地图层
+
+- `src/maps/osmnx_loader.py`
+
+  负责真实道路地图加载。它支持两种输入：
+
+  - `place_name`：例如 `Shinjuku, Tokyo, Japan`。
+  - `BoundingBox`：手动指定 `north / south / east / west`。
+
+  它的主要职责是：
+
+  - 调用 OSMnx 从 OpenStreetMap 下载道路网络。
+  - 给道路边添加 speed 和 travel time。
+  - 下载后保存为 GraphML 缓存。
+  - 下次加载相同区域时优先读取本地缓存。
+  - 在 OSMnx 或地理库不可用时，尝试使用手写 Overpass fallback。
+
+  这个模块输出的是 OSMnx 风格的 `networkx.MultiDiGraph`，仍然保留 OSM 原始节点、边和道路属性。
+
+- `src/maps/graph_adapter.py`
+
+  负责把 OSMnx 的 `MultiDiGraph` 转成项目内部使用的 `DiGraph`。这是地图到 SNN pipeline 的关键转换层。
+
+  它做的事情包括：
+
+  - 把 OSM node id 映射为连续的项目 node id。
+  - 当前实现中，项目 node id 也等于 `snn_neuron_index`。
+  - 保留 `original_osm_node_id`、`lat / lon`、`x / y`。
+  - 合并平行边，同一 `(u, v)` 只保留 cost 最小的一条。
+  - cost 优先使用 `travel_time`，其次使用 `length`，最后使用 `1.0`。
+  - 生成 `delay_ms` 作为 SNN 突触延迟。
+  - 保留道路 `geometry`，用于 Folium 绘制真实道路形状。
+  - 提供 `path_nodes_to_latlon()`，把 SNN 输出路径转回地图坐标。
+  - 提供 `nearest_node_by_latlon()`，把用户输入的经纬度 snap 到最近道路节点。
+
+### 导航结果与规划层
+
+- `src/navigation/result.py`
+
+  定义标准输出数据结构：
+
+  - `WavefrontFrame`
+  - `NavigationResult`
+
+  GUI、测试和后续扩展都应该基于这个结果结构，而不是直接依赖某个后端返回的原始字典。
+
+- `src/navigation/planner.py`
+
+  高层导航入口。它把 SNN wavefront 后端的输出整理成 `NavigationResult`。
+
+  主要流程是：
+
+  ```text
+  DiGraph
+      -> run_wavefront()
+      -> spike_times_by_node
+      -> infer_parent_trace_from_spikes()
+      -> reconstruct_path_from_parent()
+      -> NavigationResult
+  ```
+
+  它还负责：
+
+  - Brian2Loihi 失败时自动降级到 CPU reference。
+  - 根据 spike time 生成 wavefront frame。
+  - 计算路径长度、旅行时间、总代价。
+  - 把调试信息写入 `metadata`。
+
+### SNN 与 Brian2Loihi 层
+
+- `src/snn/planner.py`
+
+  SNN wavefront 的薄封装。根据 `use_loihi` 决定：
+
+  - 使用 `loihi_planner.run_loihi_wavefront()`。
+  - 或使用 CPU-compatible `event_driven_wavefront()`。
+
+  它的返回字段会保持一致，方便上层 `navigation/planner.py` 不关心具体后端。
+
+- `loihi_planner/loihi_wavefront.py`
+
+  Brian2Loihi wavefront 的核心实现。负责把 `DiGraph` 映射成 SNN：
+
+  ```text
+  graph node -> neuron
+  directed edge -> synapse
+  edge.delay_ms -> synaptic delay
+  start node -> input spike
+  goal node -> target neuron
+  ```
+
+  它会运行仿真并返回每个 neuron 的首次 spike time。
+
+- `loihi_planner/wavefront_reference.py`
+
+  CPU 参考 wavefront。它是一个 Dijkstra-like 的事件驱动传播算法，用来在没有 Brian2Loihi 时保持项目可运行，也用于验证 SNN wavefront 的行为。
+
+- `loihi_planner/parent_trace.py`
+
+  根据 spike time 和图拓扑推断每个 neuron 是被哪个前驱 neuron 激活的。这个 parent trace 用于从终点反向回溯路径。
+
+- `loihi_planner/path_reconstruction.py`
+
+  从 `parent_trace` 中重建：
+
+  ```text
+  start -> ... -> goal
+  ```
+
+  的正向路径节点序列。
+
+- `loihi_planner/path_compare.py`
+
+  路径代价计算工具。用于统计最终路径的 `cost`、`length` 或其他边属性总和。
+
+- `loihi_planner/backend_check.py`
+
+  检查当前环境中 Brian2 和 Brian2Loihi 是否可用，并返回版本和错误信息。
+
+- `loihi_planner/_brian2_runner.py`
+
+  Brian2Loihi 后端加载器。它负责兼容不同 Brian2Loihi 包名和运行模式。
+
+- `loihi_planner/loihi_config.py`
+
+  加载和规范化 Brian2Loihi 参数，例如 threshold、weight、refractory 和 seed。
+
+### 模拟交通层
+
+- `src/traffic/state.py`
+
+  定义模拟交通状态：
+
+  - `TrafficEdgeState`
+  - `TrafficSnapshot`
+
+  `TrafficSnapshot` 描述某个 traffic step 中哪些边拥堵、哪些边阻塞、哪些节点受到抑制。
+
+- `src/traffic/simulator.py`
+
+  负责生成模拟交通，并把交通状态叠加到地图图上。
+
+  当前实现不是直接修改 Brian2Loihi 内部 neuron，而是在 `DiGraph` 层修改：
+
+  - `cost`
+  - `travel_time`
+  - `delay_ms`
+  - `state = "blocked"`
+  - `node_penalty_ms`
+
+  然后重新调用 SNN wavefront。这样可以形成：
+
+  ```text
+  拥堵变化
+      -> 图代价变化
+      -> SNN delay 变化
+      -> wavefront 重新扩散
+      -> 路径重新规划
+  ```
+
+### 兼容导出层
+
+- `src/nmn/loihi/__init__.py`
+
+  保留旧的 `nmn.loihi` 导入路径，实际实现委托给 `loihi_planner/`。如果旧代码里还有：
+
+  ```python
+  from nmn.loihi import run_loihi_wavefront
+  ```
+
+  仍然可以继续工作。
+
+### 测试文件
+
+- `tests/test_graph_adapter.py`
+
+  测试 OSM 图适配逻辑，包括平行边合并、node id 与 neuron index 映射、路径坐标回映射、delay 上限编码。
+
+- `tests/test_navigation_planner.py`
+
+  测试完整导航 planner，包括 CPU wavefront、Loihi fallback、不可达目标时的 partial wavefront。
+
+- `tests/test_gui_app.py`
+
+  测试 GUI 侧的非渲染逻辑，例如有向可达性提示、任意 timestep wavefront 重建。
+
+- `tests/test_traffic_simulator.py`
+
+  测试模拟交通层，包括不污染 base graph、拥堵阻塞当前路径后触发 reroute。
+
 ## 环境安装
 
 推荐使用当前 conda 环境：
