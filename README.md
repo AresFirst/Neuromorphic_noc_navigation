@@ -52,10 +52,20 @@ OpenStreetMap / OSMnx
 │   ├── snn/
 │   │   └── planner.py             # Brian2Loihi/CPU wavefront 入口
 │   ├── traffic/
-│   │   ├── simulator.py           # 模拟交通、拥堵叠加、动态图生成
+│   │   ├── edge_state.py          # 路段动态交通字段初始化
+│   │   ├── flow_generator.py      # 运行时背景车辆需求生成
+│   │   ├── incident_generator.py  # 运行时事故/施工事件
+│   │   ├── dynamic_router.py      # 当前状态下的动态重规划
+│   │   ├── simulation_engine.py   # 动态交通主循环
+│   │   ├── traffic_state_updater.py
+│   │   ├── vehicle.py
+│   │   ├── vehicle_simulator.py
+│   │   ├── metrics.py
+│   │   ├── simulator.py           # 旧热点式接口，保留兼容
 │   │   └── state.py               # TrafficSnapshot 数据结构
 │   └── nmn/loihi/                 # 兼容导出
 └── tests/
+    ├── test_dynamic_traffic_sim.py
     ├── test_graph_adapter.py
     ├── test_gui_app.py
     ├── test_navigation_planner.py
@@ -106,7 +116,7 @@ OpenStreetMap / OSMnx
   - 普通道路、最终路径、wavefront、交通拥堵、小车 marker 的 overlay。
   - wavefront timestep slider。
   - car position slider。
-  - 模拟交通 `Step Traffic + Replan` 动态重规划。
+  - 模拟交通 `Step Dynamic Traffic` 动态推进和重规划。
   - 页面底部指标和 JSON 调试信息。
 
   这个文件是用户实际交互最多的地方，也是把地图、SNN、交通和可视化串起来的闭环入口。
@@ -242,34 +252,75 @@ OpenStreetMap / OSMnx
 
 - `src/traffic/state.py`
 
-  定义模拟交通状态：
+  定义 GUI 兼容的交通快照状态：
 
   - `TrafficEdgeState`
   - `TrafficSnapshot`
 
-  `TrafficSnapshot` 描述某个 traffic step 中哪些边拥堵、哪些边阻塞、哪些节点受到抑制。
+  `TrafficSnapshot` 描述当前 traffic step 中哪些边拥堵、哪些边阻塞、哪些节点受到抑制。新的动态仿真引擎会把当前 edge attributes 转成这个结构供 Folium overlay 使用。
 
 - `src/traffic/simulator.py`
 
-  负责生成模拟交通，并把交通状态叠加到地图图上。
+  旧版热点式拥堵接口，保留是为了兼容历史测试和外部脚本。当前 GUI 主线已经切到 `SimulationEngine`，不会再用它预先挑选热点道路。
 
-  当前实现不是直接修改 Brian2Loihi 内部 neuron，而是在 `DiGraph` 层修改：
+- `src/traffic/edge_state.py`
 
-  - `cost`
+  为每条 OSM edge 补齐动态交通字段：
+
+  - `free_flow_speed`
+  - `current_speed`
+  - `free_flow_time`
   - `travel_time`
+  - `capacity`
+  - `vehicle_count`
+  - `density`
+  - `flow`
+  - `congestion_level`
+  - `last_updated_time`
   - `delay_ms`
-  - `state = "blocked"`
-  - `node_penalty_ms`
 
-  然后重新调用 SNN wavefront。这样可以形成：
+  如果 OSM 缺少 `maxspeed` 或 `lanes`，会根据 `highway` 类型设置默认速度和容量。
+
+- `src/traffic/flow_generator.py`
+
+  运行时背景车辆生成器。每个 timestep 根据当前时间生成新的 OD 需求，支持 `normal`、`peak`、`incident` 模式。它不会提前生成整段仿真的拥堵结果。
+
+- `src/traffic/incident_generator.py`
+
+  运行时突发事件生成器。事故和施工只会在仿真推进到某个 timestep 时按概率触发。事件触发后才影响 edge capacity / speed，`DynamicRouter` 不会读取未来事件。
+
+- `src/traffic/traffic_state_updater.py`
+
+  根据当前车辆分布和当前活跃事件，用 BPR 函数更新每条 edge 的 `travel_time/current_speed/congestion_level`。
+
+- `src/traffic/vehicle.py`
+
+  定义背景车辆和主导航车辆的状态，包括 route、当前 edge、edge 上的位置、是否允许重规划、是否已到达。
+
+- `src/traffic/vehicle_simulator.py`
+
+  按当前 edge `current_speed` 推动车辆移动。车辆到达 edge 末端后进入下一条 edge；到达 destination 后从仿真中移除。
+
+- `src/traffic/dynamic_router.py`
+
+  主导航车辆的在线重规划器。它只读取当前 graph edge attributes，例如 `travel_time/current_speed/congestion_level`，不会访问未来事件、未来流量或未来车辆位置。
+
+- `src/traffic/simulation_engine.py`
+
+  动态交通主循环。每个 timestep 按如下顺序执行：
 
   ```text
-  拥堵变化
-      -> 图代价变化
-      -> SNN delay 变化
-      -> wavefront 重新扩散
-      -> 路径重新规划
+  FlowGenerator 生成当前背景车辆
+      -> IncidentGenerator 触发/结束当前事件
+      -> VehicleSimulator 移动车辆
+      -> TrafficStateUpdater 更新 edge 状态
+      -> DynamicRouter 基于当前状态决定是否重规划
+      -> GUI 读取当前 graph 进行可视化
   ```
+
+- `src/traffic/metrics.py`
+
+  记录动态仿真指标和 baseline 对比，包括静态最短路、动态最短路和项目 SNN 路由结果。
 
 ### 兼容导出层
 
@@ -337,7 +388,7 @@ streamlit run app.py
 7. 系统会把起点和终点 snap 到最近 OSM 道路节点。
 8. 点击 `Run SNN Navigation`。
 9. 查看 wavefront、最终路径、指标和小车位置。
-10. 如果要模拟拥堵，打开 `Simulated traffic`，点击 `Step Traffic + Replan`。
+10. 如果要模拟动态拥堵，打开 `Simulated traffic`，点击 `Step Dynamic Traffic` 推进仿真。
 
 ## Web 页面坐标说明
 
@@ -489,61 +540,105 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 - 绿色 marker：snap 后的起点节点。
 - 紫色 marker：snap 后的终点节点。
 - 红色小车 marker：沿最终路径 polyline 的当前位置。
-- `Car position` slider：只在存在最终路径时显示，用于手动移动小车。
+- 非动态交通模式下，`Car position` slider 用于手动移动小车。
+- 动态交通模式下，小车位置来自 `Vehicle.position_on_edge`，每次 `Step Dynamic Traffic` 后沿当前 edge 前进。
 
-第一版小车不是自动播放动画，而是由 slider 控制路径上的位置。
+当前版本不是自动播放动画，而是通过按钮推进 timestep；这样更容易观察每一步车辆流、拥塞和重规划结果。
 
 ## 模拟交通拥堵与动态重规划
 
-本项目不接入真实交通 API。Web GUI 中的 `Simulated traffic` 是一个可重复的模拟交通层，用来验证“拥堵改变 SNN wavefront 扩散路径”的闭环。
+本项目不接入真实交通 API。Web GUI 中的 `Simulated traffic` 是一个轻量级“路段级动态拥塞模拟器”，用于验证：
+
+```text
+背景车辆运行时生成
+    -> 当前路段车辆数上升
+    -> BPR travel_time / current_speed 更新
+    -> 当前路线 ETA 变差
+    -> 导航车辆只基于当前 edge 状态重规划
+```
+
+重要约束：拥塞不是出发前预先写死的。`DynamicRouter` 不能访问未来事件、未来车辆位置或未来拥塞状态；它只能读取当前 graph edge attributes，例如 `travel_time/current_speed/congestion_level`。
 
 操作流程：
 
 1. 先加载 OSM 地图。
 2. 输入起点和终点。
-3. 点击 `Run SNN Navigation`，得到一条初始路径。
-4. 在侧边栏打开 `Simulated traffic`。
-5. 调整交通参数。
-6. 点击 `Step Traffic + Replan`。
-7. 系统会生成一个新的 `TrafficSnapshot`，把部分拥堵优先放到当前路径附近，再重新运行 wavefront。
-8. 如果存在更快路线，红色路径会发生变化。
+3. 在侧边栏打开 `Simulated traffic`。
+4. 选择 `Traffic mode`，例如 `peak` 或 `incident`。
+5. 点击 `Run SNN Navigation`，系统会启动 `SimulationEngine` 并创建主导航车辆。
+6. 点击 `Step Dynamic Traffic` 推进仿真。
+7. 每个 timestep 会生成背景车辆、触发当前事件、移动车辆、更新 edge 状态并检查是否重规划。
+8. 如果当前观测状态显示新路线 ETA 明显更好，红色路径会变化；旧路线会以橙色虚线显示。
 
 交通参数含义：
 
-- `Traffic vehicles`：模拟车辆数量。越大，热点道路越容易变拥堵。
-- `Traffic hotspots`：每个 traffic step 生成多少条拥堵热点边。
-- `Congestion strength`：拥堵对 `cost / travel_time / delay_ms` 的放大强度。
-- `Block threshold`：拥堵超过该阈值时，该边会变为 `blocked`，wavefront 不再通过。
-- `Node inhibition penalty ms`：拥堵路口给进入该节点的边增加多少额外 delay，等效于提高对应 neuron 的发放难度。
-- `Traffic seed`：随机种子。相同 seed 和 step 会产生可重复的拥堵。
+- `Traffic mode`：背景车辆模式。`normal` 为普通流量，`peak` 为高峰波动，`incident` 会启用运行时事故/施工事件。
+- `Background vehicles/min`：背景车辆生成率。数值越大，路段车辆数和拥塞越容易上升。
+- `Traffic timestep seconds`：每次仿真步长 `dt`。
+- `Traffic steps per click`：每次点击 `Step Dynamic Traffic` 连续推进多少个 timestep。
+- `Incident probability/min`：每分钟触发事故/施工的概率，仅 `incident` 模式下使用。
+- `Reroute check interval s`：主导航车辆多久检查一次是否需要重规划。
+- `Min reroute interval s`：两次重规划之间的最小间隔，避免路线频繁抖动。
+- `Reroute congestion threshold`：前方路段拥塞超过该值时，会进入重规划候选。
+- `Traffic seed`：随机种子。相同 seed 下，车辆生成和事件触发可复现。
 - `Traffic edges to draw`：最多绘制多少条交通状态边，用于控制性能。
 
-模拟交通如何影响 SNN：
+每条 edge 维护的动态字段包括：
+
+- `length`
+- `free_flow_speed`
+- `current_speed`
+- `free_flow_time`
+- `travel_time`
+- `capacity`
+- `vehicle_count`
+- `density`
+- `flow`
+- `congestion_level`
+- `last_updated_time`
+
+动态交通如何影响 SNN/路由：
 
 ```text
-轻微拥堵 edge
-    -> cost 增加
-    -> travel_time 增加
-    -> delay_ms 增加
-
-严重拥堵 edge
-    -> state = blocked
-    -> wavefront 跳过这条边
-
-拥堵 node / intersection
-    -> 给进入该 node 的边增加 node_penalty_ms
-    -> 等效为该 node 对应 neuron 更难被激活
+当前 edge 上车辆数 vehicle_count
+    -> density / flow / volume-capacity ratio
+    -> BPR travel_time
+    -> current_speed
+    -> congestion_level
+    -> cost / delay_ms
+    -> 当前时刻的 SNN wavefront 或 dynamic shortest path
 ```
 
 地图颜色：
 
-- 黄色线：轻微拥堵。
-- 橙色线：中等拥堵。
-- 红色线：严重拥堵。
-- 深红虚线：blocked edge。
-- 紫红色圆点：被拥堵抑制的 node/neuron。
+- 绿色线：`congestion_level` 0.0 ~ 0.4。
+- 黄色线：`congestion_level` 0.4 ~ 0.7。
+- 红色线：`congestion_level` 0.7 ~ 0.9。
+- 深红线：`congestion_level` 0.9 ~ 1.0。
+- 橙色虚线：发生重规划后，上一条剩余路线。
 
-注意：模拟交通不会修改原始 OSM 图。每次 traffic step 都从 `base_graph` 重新叠加交通状态，生成临时 `planning_graph`。这样可以避免 delay 多次累加导致图越来越慢。
+页面指标：
+
+- `Sim time`：当前仿真时间。
+- `Vehicles`：当前仍在路网中的车辆数量，包括背景车辆和主导航车辆。
+- `Avg speed`：全网平均当前速度。
+- `Congested edges`：当前拥塞路段数量。
+- `Reroutes`：主导航车辆重规划次数。
+
+日志和 JSON 调试区会显示：
+
+- `navigation_vehicle_travel_time`
+- `number_of_reroutes`
+- `total_distance`
+- `average_network_speed`
+- `average_congestion_level`
+- `number_of_congested_edges`
+- `old_route_eta_before_reroute`
+- `new_route_eta_after_reroute`
+- `reroute_time`
+- `affected_edge_ids`
+
+注意：`SimulationEngine` 会持有一份从 `base_graph` copy 出来的动态图。背景车辆、事故和路段状态只存在于这个动态图中，不会污染原始 OSM 图。
 
 ## Web 性能与卡顿处理
 
@@ -658,12 +753,16 @@ python -m pytest -q
 - GUI 侧有向可达性提示。
 - 模拟交通拥堵叠加到动态图。
 - 拥堵阻塞当前路线后，wavefront 能重新规划到替代路线。
+- 路段级动态字段初始化。
+- 运行时 incident 只在 timestep 推进时激活。
+- DynamicRouter 只根据当前 travel_time 和 congestion_level 重规划。
+- SimulationEngine 运行时生成车辆并更新指标。
 - 小型 toy graph 跑通导航 planner。
 
 当前验证结果：
 
 ```text
-13 passed
+17 passed
 ```
 
 ## 常用命令
@@ -691,3 +790,7 @@ python -m compileall -q app.py app_demo.py src tests
 4. 点击 `Run SNN Navigation` 后调用 SNN planner。
 5. GUI 显示真实地图、道路网络、起点、终点、wavefront、最终路径和小车位置。
 6. 全流程不依赖 SUMO。
+7. 打开 `Simulated traffic` 后，背景车辆会随 timestep 持续生成。
+8. 路段颜色会根据当前 `congestion_level` 动态变化。
+9. 导航车辆只基于当前 `travel_time/current_speed/congestion_level` 判断是否重规划。
+10. 若发生重规划，JSON 日志会显示旧 ETA、新 ETA、重规划时间和受影响 edge。

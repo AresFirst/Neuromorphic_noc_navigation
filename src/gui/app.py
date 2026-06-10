@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 import networkx as nx
 
 from maps import (
@@ -13,7 +15,15 @@ from maps import (
     path_nodes_to_latlon,
 )
 from navigation import NavigationResult, WavefrontFrame, run_navigation
-from traffic import TrafficConfig, TrafficSnapshot, apply_traffic_to_graph, generate_traffic_snapshot
+from traffic import (
+    DynamicRouterConfig,
+    FlowGeneratorConfig,
+    IncidentGeneratorConfig,
+    SimulationEngine,
+    SimulationEngineConfig,
+    TrafficSnapshot,
+    Vehicle,
+)
 
 # EdgePoints 是 GUI 层的道路几何缓存格式：
 # (起点 node id, 终点 node id, Folium 可直接绘制的 [(lat, lon), ...] 折线点)。
@@ -106,14 +116,16 @@ def _add_network_edges(folium, fmap, edge_points: EdgePoints, max_edges: int) ->
 
 def _traffic_color(congestion: float, blocked: bool) -> str:
     # 交通拥堵颜色只用于 GUI 表达：
-    # 黄色=轻微拥堵，橙色=中度拥堵，红色=重度拥堵，深红=完全阻塞。
+    # 绿色=畅通，黄色=开始拥堵，红色=重度拥堵，深红=接近饱和/阻塞。
     if blocked:
         return "#7f1d1d"
-    if congestion >= 0.75:
+    if congestion >= 0.90:
+        return "#7f1d1d"
+    if congestion >= 0.70:
         return "#dc2626"
-    if congestion >= 0.45:
-        return "#f97316"
-    return "#facc15"
+    if congestion >= 0.40:
+        return "#facc15"
+    return "#16a34a"
 
 
 def _add_traffic_overlay(
@@ -322,6 +334,7 @@ def _add_path_and_markers(
     start_node: int,
     goal_node: int,
     car_index: int,
+    car_point: tuple[float, float] | None = None,
 ) -> None:
     # 绘制起点、终点、最终路径和小车位置。
     # car_index 是路径折线点索引，不是 graph node id。
@@ -343,12 +356,70 @@ def _add_path_and_markers(
     if len(points) >= 2:
         # 红色粗线表示当前规划结果。交通重规划后，这条线可能改变。
         folium.PolyLine(points, color="#dc2626", weight=6, opacity=0.95).add_to(fmap)
-        car_point = points[min(car_index, len(points) - 1)]
+        car_point = car_point or points[min(car_index, len(points) - 1)]
         folium.Marker(
             car_point,
             tooltip="Car",
             icon=folium.Icon(color="red", icon="car", prefix="fa"),
         ).add_to(fmap)
+
+
+def _distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    # 小范围地图中用经纬度近似米制距离，足够支持小车沿 edge geometry 插值。
+    dy = (float(a[0]) - float(b[0])) * 111_000.0
+    dx = (float(a[1]) - float(b[1])) * 111_000.0
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _interpolate_polyline(points: list[tuple[float, float]], distance_m: float) -> tuple[float, float]:
+    if not points:
+        return 0.0, 0.0
+    if len(points) == 1 or distance_m <= 0.0:
+        return points[0]
+    remaining = float(distance_m)
+    for start, end in zip(points, points[1:]):
+        segment = max(1.0e-9, _distance_m(start, end))
+        if remaining <= segment:
+            ratio = remaining / segment
+            lat = float(start[0]) + (float(end[0]) - float(start[0])) * ratio
+            lon = float(start[1]) + (float(end[1]) - float(start[1])) * ratio
+            return lat, lon
+        remaining -= segment
+    return points[-1]
+
+
+def _vehicle_position_latlon(
+    graph: nx.DiGraph,
+    edge_lookup: EdgePointLookup,
+    vehicle: Vehicle | None,
+) -> tuple[float, float] | None:
+    # 动态仿真中车辆位置来自 route 上当前 edge 的 position_on_edge。
+    if vehicle is None:
+        return None
+    edge = vehicle.current_edge
+    if edge is None:
+        if vehicle.destination in graph:
+            attrs = graph.nodes[vehicle.destination]
+            return float(attrs["lat"]), float(attrs["lon"])
+        return None
+    points = _points_for_edge(edge_lookup, graph, edge[0], edge[1])
+    if len(points) < 2:
+        return None
+    return _interpolate_polyline(points, float(vehicle.position_on_edge))
+
+
+def _add_previous_route_overlay(
+    folium,
+    fmap,
+    graph: nx.DiGraph,
+    previous_route: list[int],
+) -> None:
+    # 发生 reroute 后，用橙色虚线保留上一条剩余路线，便于对比新旧路径。
+    if len(previous_route) < 2:
+        return
+    points = path_nodes_to_latlon(graph, previous_route)
+    if len(points) >= 2:
+        folium.PolyLine(points, color="#f97316", weight=4, opacity=0.72, dash_array="8,8").add_to(fmap)
 
 
 def _default_points(graph: nx.DiGraph) -> tuple[float, float, float, float]:
@@ -392,36 +463,46 @@ def _reachability_status(graph: nx.DiGraph, start_node: int, goal_node: int) -> 
     )
 
 
-def _traffic_config(
-    vehicle_count: int,
-    hotspot_count: int,
-    congestion_strength: float,
-    block_threshold: float,
-    node_penalty_ms: int,
-    seed: int,
-) -> TrafficConfig:
-    # 把 Streamlit 控件值收敛成不可变配置对象，便于 simulator 使用和测试。
-    return TrafficConfig(
-        vehicle_count=int(vehicle_count),
-        hotspot_count=int(hotspot_count),
-        congestion_strength=float(congestion_strength),
-        block_threshold=float(block_threshold),
-        node_penalty_ms=int(node_penalty_ms),
-        seed=int(seed),
+def _simulation_config(
+    traffic_mode: str,
+    background_rate: float,
+    dt_seconds: float,
+    incident_probability: float,
+    reroute_check_interval: float,
+    min_reroute_interval: float,
+    congestion_threshold: float,
+    random_seed: int,
+) -> SimulationEngineConfig:
+    # 动态交通配置只控制“当前 timestep 如何推进”，不会生成未来拥堵计划。
+    return SimulationEngineConfig(
+        dt=float(dt_seconds),
+        random_seed=int(random_seed),
+        flow=FlowGeneratorConfig(
+            traffic_mode=str(traffic_mode),
+            base_rate_veh_per_minute=float(background_rate),
+            random_seed=int(random_seed),
+        ),
+        incidents=IncidentGeneratorConfig(
+            incident_probability_per_minute=float(incident_probability),
+            random_seed=int(random_seed) + 1,
+        ),
+        router=DynamicRouterConfig(
+            reroute_check_interval=float(reroute_check_interval),
+            min_reroute_interval=float(min_reroute_interval),
+            congestion_threshold=float(congestion_threshold),
+        ),
     )
 
 
 def _planning_graph(
     base_graph: nx.DiGraph,
     traffic_enabled: bool,
-    snapshot: TrafficSnapshot | None,
-    config: TrafficConfig,
+    engine: SimulationEngine | None,
 ) -> nx.DiGraph:
-    # base_graph 保持原始 OSM/SNN 图；planning_graph 是当前用于规划和绘制的临时图。
-    # 关闭交通时直接使用 base_graph；开启交通时把 TrafficSnapshot 叠加到 base_graph 上。
-    if not traffic_enabled:
+    # 动态交通开启时，planning graph 是 SimulationEngine 当前时刻的 graph。
+    if not traffic_enabled or engine is None:
         return base_graph
-    return apply_traffic_to_graph(base_graph, snapshot, config=config)
+    return engine.graph
 
 
 def _load_graph_cached(st, mode: str, place: str, bbox_values: tuple[float, float, float, float], network_type: str):
@@ -469,16 +550,18 @@ def main() -> None:
         use_loihi = st.checkbox("Use Brian2Loihi backend", value=True)
         st.divider()
 
-        # 模拟交通区：不依赖真实 API，只在当前图上生成可重复的拥堵热点。
-        # Step Traffic + Replan 会读取这些参数生成新的 TrafficSnapshot。
+        # 动态交通区：每次点击都会推进真实 timestep，拥堵由车辆流和当前事件实时产生。
         traffic_enabled = st.checkbox("Simulated traffic", value=False)
-        traffic_vehicle_count = st.slider("Traffic vehicles", 0, 300, 80, 10)
-        traffic_hotspot_count = st.slider("Traffic hotspots", 0, 40, 8, 1)
-        traffic_strength = st.slider("Congestion strength", 0.0, 6.0, 2.5, 0.1)
-        traffic_block_threshold = st.slider("Block threshold", 0.50, 1.01, 0.92, 0.01)
-        traffic_node_penalty = st.slider("Node inhibition penalty ms", 0, 30, 8, 1)
+        traffic_mode = st.selectbox("Traffic mode", ["normal", "peak", "incident"], index=1)
+        traffic_background_rate = st.slider("Background vehicles/min", 0.0, 120.0, 18.0, 1.0)
+        traffic_dt_seconds = st.slider("Traffic timestep seconds", 1.0, 30.0, 5.0, 1.0)
+        traffic_steps_per_click = st.slider("Traffic steps per click", 1, 20, 1, 1)
+        incident_probability = st.slider("Incident probability/min", 0.0, 0.50, 0.05, 0.01)
+        reroute_check_interval = st.slider("Reroute check interval s", 5.0, 60.0, 10.0, 5.0)
+        min_reroute_interval = st.slider("Min reroute interval s", 10.0, 120.0, 30.0, 5.0)
+        congestion_threshold = st.slider("Reroute congestion threshold", 0.40, 1.00, 0.80, 0.05)
         traffic_seed = st.number_input("Traffic seed", value=7, step=1)
-        max_traffic_edges = st.slider("Traffic edges to draw", 10, 500, 120, 10)
+        max_traffic_edges = st.slider("Traffic edges to draw", 10, 1000, 180, 10)
         load_clicked = st.button("Load OSM Map", type="primary")
 
     if load_clicked:
@@ -499,7 +582,9 @@ def main() -> None:
 
                 # 新地图意味着旧路线和旧交通状态都不再适用，必须清空。
                 st.session_state.navigation_result = None
+                st.session_state.traffic_engine = None
                 st.session_state.traffic_snapshot = None
+                st.session_state.traffic_step_result = None
                 st.session_state.traffic_step = 0
         except Exception as exc:
             st.error(
@@ -520,21 +605,24 @@ def main() -> None:
     edge_points: EdgePoints = st.session_state.road_edge_points
     edge_lookup: EdgePointLookup = st.session_state.edge_point_lookup
 
-    # 每次 rerun 都从侧边栏控件读取交通参数，并重建 TrafficConfig。
-    # 这样用户改变参数后，下一次 Step Traffic 就会使用新配置。
-    traffic_config = _traffic_config(
-        traffic_vehicle_count,
-        traffic_hotspot_count,
-        traffic_strength,
-        traffic_block_threshold,
-        traffic_node_penalty,
+    # 动态仿真配置只在创建新 SimulationEngine 时使用；已运行的 engine 会持续保存当前车辆和事件状态。
+    sim_config = _simulation_config(
+        traffic_mode,
+        traffic_background_rate,
+        traffic_dt_seconds,
+        incident_probability if traffic_mode == "incident" else 0.0,
+        reroute_check_interval,
+        min_reroute_interval,
+        congestion_threshold,
         int(traffic_seed),
     )
-    traffic_snapshot: TrafficSnapshot | None = st.session_state.get("traffic_snapshot")
+    traffic_engine: SimulationEngine | None = st.session_state.get("traffic_engine")
+    traffic_snapshot: TrafficSnapshot | None = (
+        traffic_engine.current_snapshot() if bool(traffic_enabled) and traffic_engine is not None else None
+    )
 
-    # graph 是当前 planning_graph。交通关闭时等于 base_graph；
-    # 交通开启时，它包含 congestion、blocked、node_penalty 等动态属性。
-    graph = _planning_graph(base_graph, bool(traffic_enabled), traffic_snapshot, traffic_config)
+    # graph 是当前 planning_graph。交通关闭时等于 base_graph；交通开启时来自 SimulationEngine 当前状态。
+    graph = _planning_graph(base_graph, bool(traffic_enabled), traffic_engine)
     default_start_lat, default_start_lon, default_goal_lat, default_goal_lon = _default_points(base_graph)
 
     # 起终点输入仍使用经纬度。真正用于 SNN 的是 snap 后的 node id。
@@ -551,57 +639,64 @@ def main() -> None:
     path_exists, reachability_message = _reachability_status(graph, start_node, goal_node)
 
     # 三个主要动作：
-    # 1. Run SNN Navigation：在当前 graph 上规划；
-    # 2. Step Traffic + Replan：生成下一帧交通并立即重规划；
-    # 3. Clear Traffic：清空交通快照和路线，回到无拥堵状态。
+    # 1. Run SNN Navigation：无交通时直接规划；有交通时启动 SimulationEngine 和导航车辆；
+    # 2. Step Dynamic Traffic：推进在线仿真，路由器只看当前 graph edge state；
+    # 3. Clear Traffic：清空车辆、事件和动态边状态。
     run_col, traffic_col, clear_col = st.columns(3)
     run_clicked = run_col.button("Run SNN Navigation", type="primary")
-    traffic_clicked = traffic_col.button("Step Traffic + Replan", disabled=not bool(traffic_enabled))
-    clear_traffic_clicked = clear_col.button("Clear Traffic", disabled=traffic_snapshot is None)
+    traffic_clicked = traffic_col.button("Step Dynamic Traffic", disabled=not bool(traffic_enabled))
+    clear_traffic_clicked = clear_col.button("Clear Traffic", disabled=traffic_engine is None)
     if clear_traffic_clicked:
-        # 清空交通时不删除 base_graph，只删除动态状态和旧结果。
+        # 清空交通时不删除 base_graph，只删除动态仿真状态和旧结果。
+        st.session_state.traffic_engine = None
         st.session_state.traffic_snapshot = None
+        st.session_state.traffic_step_result = None
         st.session_state.traffic_step = 0
+        traffic_engine = None
         traffic_snapshot = None
-        graph = _planning_graph(base_graph, bool(traffic_enabled), traffic_snapshot, traffic_config)
+        graph = _planning_graph(base_graph, bool(traffic_enabled), traffic_engine)
         st.session_state.navigation_result = None
+
+    def _project_route_planner(route_graph: nx.DiGraph, source: int, target: int) -> NavigationResult:
+        # DynamicRouter 调用该函数时，只传入当前 graph；不会接触未来事件或未来车辆状态。
+        return run_navigation(route_graph, source, target, use_loihi=bool(use_loihi))
 
     if run_clicked:
         with st.spinner("Running SNN wavefront navigation..."):
-            # run_navigation 内部会执行 DiGraph -> SNN wavefront -> parent trace -> NavigationResult。
-            st.session_state.navigation_result = run_navigation(
-                graph,
-                start_node,
-                goal_node,
-                use_loihi=bool(use_loihi),
-            )
+            if traffic_enabled:
+                traffic_engine = SimulationEngine(base_graph, config=sim_config)
+                st.session_state.traffic_engine = traffic_engine
+                st.session_state.navigation_result = traffic_engine.start_navigation(
+                    start_node,
+                    goal_node,
+                    route_planner=_project_route_planner,
+                )
+                traffic_snapshot = traffic_engine.current_snapshot()
+                st.session_state.traffic_snapshot = traffic_snapshot
+                graph = traffic_engine.graph
+            else:
+                # run_navigation 内部会执行 DiGraph -> SNN wavefront -> parent trace -> NavigationResult。
+                st.session_state.navigation_result = run_navigation(
+                    graph,
+                    start_node,
+                    goal_node,
+                    use_loihi=bool(use_loihi),
+                )
     if traffic_clicked:
-        previous_result: NavigationResult | None = st.session_state.get("navigation_result")
-        # 如果已经有上一条路径，则把拥堵优先放到当前路径附近，使动态改路效果更明显。
-        # 如果还没有路径，模拟器会在全图中生成热点。
-        route_edges = previous_result.path_edges if previous_result and previous_result.path_edges else []
-        next_step = int(st.session_state.get("traffic_step", 0)) + 1
-        traffic_snapshot = generate_traffic_snapshot(
-            base_graph,
-            step=next_step,
-            config=traffic_config,
-            route_edges=route_edges,
-            prefer_route=True,
-        )
-        st.session_state.traffic_step = next_step
-        st.session_state.traffic_snapshot = traffic_snapshot
-
-        # 将 traffic snapshot 叠加到 base_graph，生成当前 timestep 的 planning_graph。
-        # 注意 apply_traffic_to_graph 返回 copy，不会污染 base_graph。
-        graph = apply_traffic_to_graph(base_graph, traffic_snapshot, config=traffic_config)
-        with st.spinner("Applying simulated congestion and rerunning wavefront..."):
-            # 交通变化后立即重跑 wavefront。若原路线被 blocked 或变慢，parent trace 会回溯出新路径。
-            st.session_state.navigation_result = run_navigation(
-                graph,
-                start_node,
-                goal_node,
-                use_loihi=bool(use_loihi),
-            )
+        if traffic_engine is None:
+            traffic_engine = SimulationEngine(base_graph, config=sim_config)
+            st.session_state.traffic_engine = traffic_engine
+            traffic_engine.start_navigation(start_node, goal_node, route_planner=_project_route_planner)
+        with st.spinner("Advancing dynamic traffic and checking reroute..."):
+            step_result = None
+            for _ in range(int(traffic_steps_per_click)):
+                step_result = traffic_engine.step(route_planner=_project_route_planner)
+            st.session_state.traffic_step_result = step_result
+            st.session_state.traffic_step = int(st.session_state.get("traffic_step", 0)) + int(traffic_steps_per_click)
+            st.session_state.navigation_result = traffic_engine.navigation_result
+            traffic_snapshot = traffic_engine.current_snapshot()
+            st.session_state.traffic_snapshot = traffic_snapshot
+            graph = traffic_engine.graph
 
     # 按最新 graph 再做一次可达性检查。traffic_clicked 后 graph 可能已经变化。
     path_exists, reachability_message = _reachability_status(graph, start_node, goal_node)
@@ -613,8 +708,10 @@ def main() -> None:
     result: NavigationResult | None = st.session_state.get("navigation_result")
     # path_points 是最终路径的折线坐标，用于小车 slider 和地图缩放。
     path_points = path_nodes_to_latlon(graph, result.path_nodes) if result else []
+    simulation_vehicle = traffic_engine.navigation_vehicle if bool(traffic_enabled) and traffic_engine is not None else None
+    actual_car_point = _vehicle_position_latlon(graph, edge_lookup, simulation_vehicle)
     car_index = 0
-    if len(path_points) > 1:
+    if len(path_points) > 1 and simulation_vehicle is None:
         car_index = st.slider("Car position", 0, len(path_points) - 1, 0)
     wave_time_ms = 0
     wavefront_frame = WavefrontFrame(t=0, active_nodes=[], active_edges=[])
@@ -661,8 +758,10 @@ def main() -> None:
             edge_lookup,
             int(max_wavefront_nodes),
         )
+    if traffic_engine is not None:
+        _add_previous_route_overlay(folium, fmap, graph, traffic_engine.previous_navigation_route)
     # 最终路径和起终点 marker 放到最上层，保证用户容易识别当前路线。
-    _add_path_and_markers(folium, fmap, graph, result, start_node, goal_node, car_index)
+    _add_path_and_markers(folium, fmap, graph, result, start_node, goal_node, car_index, actual_car_point)
     _fit_map_bounds(fmap, graph, path_points)
 
     if result and result.wavefront_frames:
@@ -690,12 +789,20 @@ def main() -> None:
         f"{_metric_float(result, 'snn_runtime_sec'):.3f} s",
     )
     if traffic_enabled:
-        # 交通指标区只在模拟交通开启时显示，便于确认当前 step 的拥堵规模。
-        traffic_cols = st.columns(4)
-        traffic_cols[0].metric("Traffic step", str(int(st.session_state.get("traffic_step", 0))))
-        traffic_cols[1].metric("Congested edges", str(len(traffic_snapshot.congested_edges) if traffic_snapshot else 0))
-        traffic_cols[2].metric("Blocked edges", str(len(traffic_snapshot.blocked_edges) if traffic_snapshot else 0))
-        traffic_cols[3].metric("Inhibited nodes", str(len(traffic_snapshot.inhibited_nodes) if traffic_snapshot else 0))
+        # 动态交通指标区：全部来自当前 SimulationEngine 状态，不含未来信息。
+        metrics = traffic_engine.metrics.metrics if traffic_engine is not None else None
+        traffic_cols = st.columns(5)
+        traffic_cols[0].metric("Sim time", f"{traffic_engine.current_time:.1f} s" if traffic_engine else "0.0 s")
+        traffic_cols[1].metric("Vehicles", str(len(traffic_engine.vehicles) if traffic_engine else 0))
+        traffic_cols[2].metric(
+            "Avg speed",
+            f"{metrics.average_network_speed:.1f} m/s" if metrics else "0.0 m/s",
+        )
+        traffic_cols[3].metric(
+            "Congested edges",
+            str(metrics.number_of_congested_edges if metrics else 0),
+        )
+        traffic_cols[4].metric("Reroutes", str(metrics.number_of_reroutes if metrics else 0))
 
     # JSON 调试区：保留关键状态，方便定位“目标 neuron 是否发放”“是否因为交通 blocked 不可达”等问题。
     st.json(
@@ -710,9 +817,16 @@ def main() -> None:
             "directed_path_exists": path_exists,
             "traffic_enabled": bool(traffic_enabled),
             "traffic_step": int(st.session_state.get("traffic_step", 0)),
+            "simulation_time": traffic_engine.current_time if traffic_engine else 0.0,
+            "traffic_vehicle_count": len(traffic_engine.vehicles) if traffic_engine else 0,
             "traffic_congested_edges": len(traffic_snapshot.congested_edges) if traffic_snapshot else 0,
-            "traffic_blocked_edges": len(traffic_snapshot.blocked_edges) if traffic_snapshot else 0,
-            "traffic_inhibited_nodes": len(traffic_snapshot.inhibited_nodes) if traffic_snapshot else 0,
+            "active_incidents": len(traffic_engine.incident_generator.active_incidents(traffic_engine.current_time))
+            if traffic_engine
+            else 0,
+            "metrics": traffic_engine.metrics.metrics.to_dict() if traffic_engine else {},
+            "last_reroute": asdict(traffic_engine.last_reroute_decision)
+            if traffic_engine and traffic_engine.last_reroute_decision
+            else None,
         }
     )
     if result and result.metadata.get("error"):

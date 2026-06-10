@@ -106,6 +106,9 @@ def osmnx_multidigraph_to_digraph(graph: nx.MultiDiGraph) -> nx.DiGraph:
             "delay_ms": _delay_ms(cost),
             "geometry": _geometry_from_attrs(attrs),
             "state": str(attrs.get("state", "normal")),
+            "highway": attrs.get("highway", "unclassified"),
+            "maxspeed": attrs.get("maxspeed"),
+            "lanes": attrs.get("lanes"),
         }
         if "snn_synapse_index" in attrs:
             edge_payload["snn_synapse_index"] = attrs["snn_synapse_index"]
