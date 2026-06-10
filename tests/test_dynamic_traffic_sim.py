@@ -116,3 +116,39 @@ def test_simulation_engine_generates_runtime_vehicles_and_updates_metrics():
     assert result.current_time == 5.0
     assert result.metrics["samples"] == 1
     assert "number_of_congested_edges" in result.metrics
+
+
+def test_forced_resume_check_reroutes_using_current_state_despite_intervals():
+    graph = _dynamic_graph()
+    engine = SimulationEngine(
+        graph,
+        SimulationEngineConfig(
+            router=DynamicRouterConfig(
+                reroute_check_interval=999.0,
+                min_reroute_interval=999.0,
+                eta_improvement_threshold=0.15,
+                congestion_threshold=0.8,
+            ),
+            incidents=IncidentGeneratorConfig(incident_probability_per_minute=0.0, random_seed=3),
+            flow=FlowGeneratorConfig(base_rate_veh_per_minute=0.0, random_seed=2),
+        ),
+    )
+    engine.start_navigation(0, 3)
+    assert engine.navigation_vehicle is not None
+    assert engine.navigation_vehicle.route == [0, 1, 3]
+    engine.navigation_vehicle.position_on_edge = 50.0
+
+    engine.graph[1][3]["travel_time"] = 100.0
+    engine.graph[1][3]["congestion_level"] = 0.95
+    engine.graph[1][2]["travel_time"] = 5.0
+    engine.graph[2][3]["travel_time"] = 5.0
+
+    assert engine.check_navigation_reroute(force=False) is None
+    decision = engine.check_navigation_reroute(force=True)
+
+    assert decision is not None
+    assert decision.rerouted is True
+    assert decision.old_route == [1, 3]
+    assert decision.new_route == [1, 2, 3]
+    assert engine.previous_navigation_route == [1, 3]
+    assert engine.navigation_vehicle.route == [0, 1, 2, 3]

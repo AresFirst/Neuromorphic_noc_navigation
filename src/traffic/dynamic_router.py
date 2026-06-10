@@ -111,14 +111,15 @@ class DynamicRouter:
         *,
         current_time: float,
         route_planner: RoutePlanner | None = None,
+        force: bool = False,
     ) -> RerouteDecision | None:
         """Check current conditions and reroute only if current ETA improves enough."""
         if vehicle.arrived or vehicle.destination not in graph:
             return None
-        if current_time - self.last_check_time < float(self.config.reroute_check_interval):
+        if not force and current_time - self.last_check_time < float(self.config.reroute_check_interval):
             return None
         self.last_check_time = float(current_time)
-        if current_time - vehicle.last_reroute_time < float(self.config.min_reroute_interval):
+        if not force and current_time - vehicle.last_reroute_time < float(self.config.min_reroute_interval):
             return None
 
         source = int(vehicle.current_edge_end)

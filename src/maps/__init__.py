@@ -11,12 +11,25 @@ from .graph_adapter import (
     path_edges,
     path_nodes_to_latlon,
 )
-from .osmnx_loader import BoundingBox, load_osm_graph
+from .osmnx_loader import (
+    DEFAULT_FIXED_MAP_REGION,
+    HANGZHOU_BBOX,
+    HANGZHOU_CACHE_FILENAME_TEMPLATE,
+    HANGZHOU_PLACE_NAME,
+    BoundingBox,
+    load_hangzhou_graph,
+    load_osm_graph,
+)
 
 # __all__ 明确公共 API，便于后续重构内部文件时保持调用方稳定。
 __all__ = [
     "BoundingBox",
+    "DEFAULT_FIXED_MAP_REGION",
+    "HANGZHOU_BBOX",
+    "HANGZHOU_CACHE_FILENAME_TEMPLATE",
+    "HANGZHOU_PLACE_NAME",
     "edge_geometry_to_latlon",
+    "load_hangzhou_graph",
     "load_osm_graph",
     "nearest_node_by_latlon",
     "osmnx_multidigraph_to_digraph",

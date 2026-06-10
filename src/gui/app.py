@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import time
 
 import networkx as nx
 
 from maps import (
     BoundingBox,
+    DEFAULT_FIXED_MAP_REGION,
+    HANGZHOU_BBOX,
+    HANGZHOU_CACHE_FILENAME_TEMPLATE,
     edge_geometry_to_latlon,
-    load_osm_graph,
+    load_hangzhou_graph,
     nearest_node_by_latlon,
     osmnx_multidigraph_to_digraph,
     path_nodes_to_latlon,
@@ -34,6 +37,35 @@ EdgePoints = list[tuple[int, int, list[tuple[float, float]]]]
 # wavefront、交通拥堵和最终路径都需要频繁按边取坐标，所以单独建索引。
 EdgePointLookup = dict[tuple[int, int], list[tuple[float, float]]]
 
+FOLIUM_TILE_NAME = "OpenStreetMap"
+NETWORK_TYPE_LABELS = {
+    "drive": "机动车道路",
+    "walk": "步行道路",
+    "bike": "骑行道路",
+    "all": "全部道路",
+}
+TRAFFIC_MODE_LABELS = {
+    "normal": "普通",
+    "peak": "高峰",
+    "incident": "事故/施工",
+}
+REROUTE_REASON_LABELS = {
+    "lookahead_congestion": "前方拥堵",
+    "eta_improvement": "新路线 ETA 更优",
+    "severe_congestion_without_eta_improvement": "前方拥堵但新路线不更优",
+    "eta_improvement_too_small": "ETA 改善不足",
+    "no_current_route_available": "当前无可用替代路线",
+}
+PLAYBACK_DEFAULTS = {
+    "vehicle_running": False,
+    "vehicle_paused": False,
+    "vehicle_finished": False,
+    "simulation_started": False,
+    "last_tick_time": None,
+    "auto_sim_time": 0.0,
+    "navigation_status_message": None,
+}
+
 
 def _imports():
     # Streamlit/Folium 是交互式 GUI 依赖。放在函数里导入，便于测试非 GUI 逻辑时
@@ -47,6 +79,88 @@ def _imports():
             "GUI dependencies are missing. Install them with `pip install -r requirements.txt`."
         ) from exc
     return st, folium, st_folium
+
+
+def _coordinate_in_bbox(lat: float, lon: float, bbox: BoundingBox = HANGZHOU_BBOX) -> bool:
+    return (
+        float(bbox.south) <= float(lat) <= float(bbox.north)
+        and float(bbox.west) <= float(lon) <= float(bbox.east)
+    )
+
+
+def _validate_hangzhou_coordinates(
+    start_lat: float,
+    start_lon: float,
+    goal_lat: float,
+    goal_lon: float,
+    bbox: BoundingBox = HANGZHOU_BBOX,
+) -> list[str]:
+    errors: list[str] = []
+    if not _coordinate_in_bbox(start_lat, start_lon, bbox):
+        errors.append("起点坐标不在浙江省杭州市范围内，请输入杭州经纬度范围内的坐标。")
+    if not _coordinate_in_bbox(goal_lat, goal_lon, bbox):
+        errors.append("终点坐标不在浙江省杭州市范围内，请输入杭州经纬度范围内的坐标。")
+    return errors
+
+
+def _ensure_playback_state(state) -> None:
+    for key, value in PLAYBACK_DEFAULTS.items():
+        state.setdefault(key, value)
+
+
+def _reset_playback_state(state, *, message: str | None = None) -> None:
+    state["vehicle_running"] = False
+    state["vehicle_paused"] = False
+    state["vehicle_finished"] = False
+    state["simulation_started"] = False
+    state["last_tick_time"] = None
+    state["auto_sim_time"] = 0.0
+    state["navigation_status_message"] = message
+
+
+def _start_playback_state(state, *, now: float | None = None) -> None:
+    state["vehicle_running"] = True
+    state["vehicle_paused"] = False
+    state["vehicle_finished"] = False
+    state["simulation_started"] = True
+    state["last_tick_time"] = float(now if now is not None else time.monotonic())
+    state["navigation_status_message"] = "车辆正在自动行驶"
+
+
+def _pause_playback_state(state) -> None:
+    state["vehicle_running"] = False
+    state["vehicle_paused"] = True
+    state["vehicle_finished"] = False
+    state["navigation_status_message"] = "导航已暂停"
+
+
+def _finish_playback_state(state, message: str) -> None:
+    state["vehicle_running"] = False
+    state["vehicle_paused"] = False
+    state["vehicle_finished"] = True
+    state["last_tick_time"] = None
+    state["navigation_status_message"] = message
+
+
+def _navigation_status_label(result: NavigationResult | None) -> str:
+    if result is None:
+        return "未运行"
+    return "导航成功" if bool(result.metadata.get("success")) else "导航失败"
+
+
+def _reroute_decision_payload(decision) -> dict[str, object] | None:
+    if decision is None:
+        return None
+    return {
+        "是否重规划": bool(decision.rerouted),
+        "重规划时间（秒）": float(decision.reroute_time),
+        "旧 ETA（秒）": float(decision.old_route_eta_before_reroute),
+        "新 ETA（秒）": float(decision.new_route_eta_after_reroute),
+        "受影响路段": [f"{u}->{v}" for u, v in decision.affected_edge_ids],
+        "旧路线": [int(node) for node in decision.old_route],
+        "新路线": [int(node) for node in decision.new_route],
+        "原因": REROUTE_REASON_LABELS.get(str(decision.reason), str(decision.reason)),
+    }
 
 
 def _graph_center(graph: nx.DiGraph) -> tuple[float, float]:
@@ -160,8 +274,8 @@ def _add_traffic_overlay(
             opacity=0.82,
             dash_array="3,5" if state.blocked else None,
             tooltip=(
-                f"traffic edge {u}->{v}, congestion={state.congestion:.2f}, "
-                f"vehicles={state.vehicle_count}, blocked={state.blocked}"
+                f"交通路段 {u}->{v}，拥堵={state.congestion:.2f}，"
+                f"车辆={state.vehicle_count}，阻塞={state.blocked}"
             ),
         ).add_to(fmap)
 
@@ -178,7 +292,7 @@ def _add_traffic_overlay(
             fill=True,
             fill_opacity=min(0.85, 0.25 + float(congestion) * 0.65),
             weight=2,
-            tooltip=f"inhibited neuron/node {node}, congestion={float(congestion):.2f}",
+            tooltip=f"受抑制路口/神经元 {node}，拥堵={float(congestion):.2f}",
         ).add_to(fmap)
 
 
@@ -319,10 +433,10 @@ def _wavefront_time_limit(result: NavigationResult | None) -> int:
 
 def _wavefront_time_caption(frame: WavefrontFrame, max_time_ms: int, drawn_node_count: int) -> str:
     # 显示当前 wavefront timestep 的摘要。drawn_nodes 用于提醒用户视觉上只画了前 N 个点。
-    clipped = "" if drawn_node_count >= len(frame.active_nodes) else f", drawn_nodes={drawn_node_count}"
+    clipped = "" if drawn_node_count >= len(frame.active_nodes) else f"，已绘制节点={drawn_node_count}"
     return (
-        f"Wavefront timestep t={frame.t}/{max_time_ms} ms, "
-        f"active_nodes={len(frame.active_nodes)}{clipped}, active_edges={len(frame.active_edges)}"
+        f"波前时间步 t={frame.t}/{max_time_ms} 毫秒，"
+        f"已激活节点={len(frame.active_nodes)}{clipped}，已激活边={len(frame.active_edges)}"
     )
 
 
@@ -342,12 +456,12 @@ def _add_path_and_markers(
     goal_attrs = graph.nodes[goal_node]
     folium.Marker(
         (float(start_attrs["lat"]), float(start_attrs["lon"])),
-        tooltip=f"Start node {start_node}",
+        tooltip=f"起点节点 {start_node}",
         icon=folium.Icon(color="green", icon="play"),
     ).add_to(fmap)
     folium.Marker(
         (float(goal_attrs["lat"]), float(goal_attrs["lon"])),
-        tooltip=f"Goal node {goal_node}",
+        tooltip=f"终点节点 {goal_node}",
         icon=folium.Icon(color="purple", icon="flag"),
     ).add_to(fmap)
     if result is None or not result.path_nodes:
@@ -359,7 +473,7 @@ def _add_path_and_markers(
         car_point = car_point or points[min(car_index, len(points) - 1)]
         folium.Marker(
             car_point,
-            tooltip="Car",
+            tooltip="车辆",
             icon=folium.Icon(color="red", icon="car", prefix="fa"),
         ).add_to(fmap)
 
@@ -443,23 +557,23 @@ def _reachability_status(graph: nx.DiGraph, start_node: int, goal_node: int) -> 
     # 可达性检查使用当前 planning graph。
     # traffic 开启后，blocked 边已经从 wavefront 角度不可通行，因此这里也会反映交通影响。
     if start_node == goal_node:
-        return True, "Start and goal snap to the same node."
+        return True, "起点和终点吸附到了同一个道路节点。"
     if nx.has_path(graph, start_node, goal_node):
-        return True, "A directed route exists from start to goal."
+        return True, "从起点到终点存在有向可达路径。"
     if nx.has_path(graph, goal_node, start_node):
         return False, (
-            "No directed route exists from start to goal, but the reverse direction is reachable. "
-            "This usually means one-way streets or snapped points are facing the wrong direction."
+            "从当前起点到终点不存在有向可达路径，但反方向可能可达。"
+            "请调整起终点位置或扩大地图区域。"
         )
     weak_component = nx.node_connected_component(graph.to_undirected(as_view=True), start_node)
     if goal_node not in weak_component:
         return False, (
-            "Start and goal are in different road-network components. "
-            "Move one point closer to the connected road network or load a larger map area."
+            "起点和终点位于不同道路连通分量中。"
+            "请将坐标调整到杭州道路网络的连通区域内。"
         )
     return False, (
-        "Start and goal are in the same undirected component, but no directed route exists. "
-        "Try nearby coordinates, `network_type=all`, or a different start/goal direction."
+        "起点和终点在同一无向连通分量内，但不存在有向可达路径。"
+        "请尝试附近坐标，或切换道路网络类型。"
     )
 
 
@@ -505,77 +619,85 @@ def _planning_graph(
     return engine.graph
 
 
-def _load_graph_cached(st, mode: str, place: str, bbox_values: tuple[float, float, float, float], network_type: str):
-    # Streamlit cache_resource 缓存地图下载/转换结果。
-    # 只要 mode/place/bbox/network_type 不变，重复 rerun 页面不会重新下载 OSM。
+def _load_hangzhou_graph_cached(st, network_type: str):
+    # Streamlit cache_resource 缓存杭州地图下载/转换结果。
+    # 只要 network_type 不变，重复 rerun 页面不会重新读取 GraphML 或访问网络。
     @st.cache_resource(show_spinner=False)
-    def _load(mode_key: str, place_key: str, bbox_key: tuple[float, float, float, float], network_type_key: str):
-        if mode_key == "Place name":
-            osm_graph = load_osm_graph(place_name=place_key, network_type=network_type_key)
-        else:
-            north, south, east, west = bbox_key
-            osm_graph = load_osm_graph(
-                bbox=BoundingBox(north=north, south=south, east=east, west=west),
-                network_type=network_type_key,
-            )
+    def _load(network_type_key: str):
+        osm_graph = load_hangzhou_graph(network_type=network_type_key)
         return osmnx_multidigraph_to_digraph(osm_graph)
 
-    return _load(mode, place, bbox_values, network_type)
+    return _load(network_type)
 
 
 def main() -> None:
     # main 是整个 Web 页面入口。Streamlit 的特点是每次控件变化都会从头执行 main，
     # 所以需要通过 st.session_state 保存地图、交通快照和上一次导航结果。
     st, folium, st_folium = _imports()
-    st.set_page_config(page_title="SNN Real-Map Navigation", layout="wide")
-    st.title("Real Map + Brian2Loihi SNN Navigation")
+    st.set_page_config(page_title="杭州 OSM SNN 导航", layout="wide")
+    st.title("杭州 OSM SNN 导航")
+    _ensure_playback_state(st.session_state)
 
     with st.sidebar:
-        # 地图输入区：支持按地名下载，也支持按 bbox 精确裁剪。
-        # network_type="drive" 会保留真实机动车道路方向，可能出现单行道不可达。
-        mode = st.radio("Map input", ["Place name", "Bounding box"], horizontal=True)
-        network_type = st.selectbox("Network type", ["drive", "walk", "bike", "all"], index=0)
-        tiles = st.selectbox("Map tiles", ["CartoDB dark_matter", "OpenStreetMap", "CartoDB positron"], index=0)
-        place = st.text_input("Place name", value="Shinjuku, Tokyo, Japan")
-        north = st.number_input("North", value=35.7040, format="%.6f")
-        south = st.number_input("South", value=35.6810, format="%.6f")
-        east = st.number_input("East", value=139.7160, format="%.6f")
-        west = st.number_input("West", value=139.6850, format="%.6f")
+        st.header("地图与规划")
+        st.caption(f"当前地图区域：{DEFAULT_FIXED_MAP_REGION}")
+        st.caption(
+            "地图数据优先从本地缓存加载；缓存不存在时将自动从 OpenStreetMap 下载并缓存。"
+        )
+        st.caption(
+            f"杭州经纬度范围：北 {HANGZHOU_BBOX.north:.3f}，南 {HANGZHOU_BBOX.south:.3f}，"
+            f"东 {HANGZHOU_BBOX.east:.3f}，西 {HANGZHOU_BBOX.west:.3f}"
+        )
+        st.caption(f"地图底图：{FOLIUM_TILE_NAME}")
 
-        # 性能控制区：Folium 线段/点越多，slider 交互越卡。
-        # 这里允许用户限制底图道路数和 wavefront 节点数。
-        max_edges = st.slider("Road edges to draw", 200, 8000, 2500, 100)
-        draw_base_roads = st.checkbox("Draw base roads", value=True)
-        max_wavefront_nodes = st.slider("Wavefront nodes to draw", 50, 3000, 700, 50)
-        use_loihi = st.checkbox("Use Brian2Loihi backend", value=True)
+        # network_type="drive" 会保留真实机动车道路方向，可能出现单行道不可达。
+        network_type = st.selectbox(
+            "道路网络类型",
+            ["drive", "walk", "bike", "all"],
+            index=0,
+            format_func=lambda value: NETWORK_TYPE_LABELS.get(value, value),
+        )
+        st.caption(
+            f"缓存文件：data/osm_cache/{HANGZHOU_CACHE_FILENAME_TEMPLATE.format(network_type=network_type)}"
+        )
+
+        # 性能控制区：Folium 线段/点越多，交互越卡。
+        max_edges = st.slider("道路绘制数量上限", 200, 8000, 2500, 100)
+        draw_base_roads = st.checkbox("显示基础道路网络", value=True)
+        max_wavefront_nodes = st.slider("波前节点绘制数量上限", 50, 3000, 700, 50)
+        use_loihi = st.checkbox("使用 Brian2Loihi 后端", value=True)
+        load_clicked = st.button("加载杭州地图", type="primary")
         st.divider()
 
-        # 动态交通区：每次点击都会推进真实 timestep，拥堵由车辆流和当前事件实时产生。
-        traffic_enabled = st.checkbox("Simulated traffic", value=False)
-        traffic_mode = st.selectbox("Traffic mode", ["normal", "peak", "incident"], index=1)
-        traffic_background_rate = st.slider("Background vehicles/min", 0.0, 120.0, 18.0, 1.0)
-        traffic_dt_seconds = st.slider("Traffic timestep seconds", 1.0, 30.0, 5.0, 1.0)
-        traffic_steps_per_click = st.slider("Traffic steps per click", 1, 20, 1, 1)
-        incident_probability = st.slider("Incident probability/min", 0.0, 0.50, 0.05, 0.01)
-        reroute_check_interval = st.slider("Reroute check interval s", 5.0, 60.0, 10.0, 5.0)
-        min_reroute_interval = st.slider("Min reroute interval s", 10.0, 120.0, 30.0, 5.0)
-        congestion_threshold = st.slider("Reroute congestion threshold", 0.40, 1.00, 0.80, 0.05)
-        traffic_seed = st.number_input("Traffic seed", value=7, step=1)
-        max_traffic_edges = st.slider("Traffic edges to draw", 10, 1000, 180, 10)
-        load_clicked = st.button("Load OSM Map", type="primary")
+        # 动态交通区：自动行驶时每次刷新都会推进真实 timestep，拥堵由车辆流和当前事件实时产生。
+        st.header("模拟交通")
+        traffic_enabled = st.checkbox("启用模拟交通", value=False)
+        traffic_mode = st.selectbox(
+            "交通模式",
+            ["normal", "peak", "incident"],
+            index=1,
+            format_func=lambda value: TRAFFIC_MODE_LABELS.get(value, value),
+        )
+        traffic_background_rate = st.slider("背景车辆生成率（辆/分钟）", 0.0, 120.0, 18.0, 1.0)
+        traffic_dt_seconds = st.slider("交通时间步（秒）", 1.0, 30.0, 5.0, 1.0)
+        traffic_steps_per_refresh = st.slider("每次刷新推进步数", 1, 20, 1, 1)
+        incident_probability = st.slider("事故/施工概率（每分钟）", 0.0, 0.50, 0.05, 0.01)
+        reroute_check_interval = st.slider("重规划检查间隔（秒）", 5.0, 60.0, 10.0, 5.0)
+        min_reroute_interval = st.slider("最小重规划间隔（秒）", 10.0, 120.0, 30.0, 5.0)
+        congestion_threshold = st.slider("重规划拥堵阈值", 0.40, 1.00, 0.80, 0.05)
+        traffic_seed = st.number_input("交通随机种子", value=7, step=1)
+        max_traffic_edges = st.slider("交通路段绘制数量上限", 10, 1000, 180, 10)
+        apply_traffic_clicked = st.button(
+            "应用当前交通设置",
+            disabled=st.session_state.get("traffic_engine") is None,
+        )
 
     if load_clicked:
         try:
-            with st.spinner("Loading OSM road network..."):
+            with st.spinner("正在加载杭州道路网络..."):
                 # road_graph 是 base_graph：只包含 OSM 基础道路和基础 SNN delay。
                 # 后续交通拥堵不会直接改这个图，而是生成临时 planning_graph。
-                st.session_state.road_graph = _load_graph_cached(
-                    st,
-                    mode,
-                    place,
-                    (float(north), float(south), float(east), float(west)),
-                    network_type,
-                )
+                st.session_state.road_graph = _load_hangzhou_graph_cached(st, network_type)
                 # 加载地图后立即预计算所有道路几何。后续 rerun 时直接复用，减少卡顿。
                 st.session_state.road_edge_points = _build_edge_points(st.session_state.road_graph)
                 st.session_state.edge_point_lookup = _edge_point_lookup(st.session_state.road_edge_points)
@@ -586,15 +708,19 @@ def main() -> None:
                 st.session_state.traffic_snapshot = None
                 st.session_state.traffic_step_result = None
                 st.session_state.traffic_step = 0
+                st.session_state.last_start_node = None
+                st.session_state.last_goal_node = None
+                _reset_playback_state(st.session_state)
         except Exception as exc:
             st.error(
+                "杭州地图加载失败："
                 f"{exc}\n\n"
-                "Try a smaller bbox, check network access, or place a cached GraphML file under data/osm_cache."
+                "请检查网络连接，或确认本地缓存文件位于 data/osm_cache/ 目录。"
             )
             return
     if "road_graph" not in st.session_state:
-        # 页面首次打开时不自动下载地图，避免用户还没选择区域就开始耗时请求。
-        st.info("Load an OSM map to start navigation.")
+        # 页面首次打开时不自动下载地图，避免直接触发耗时请求。
+        st.info("请先点击“加载杭州地图”开始导航。")
         return
 
     base_graph: nx.DiGraph = st.session_state.road_graph
@@ -617,20 +743,37 @@ def main() -> None:
         int(traffic_seed),
     )
     traffic_engine: SimulationEngine | None = st.session_state.get("traffic_engine")
+    if apply_traffic_clicked and traffic_engine is not None:
+        traffic_engine.update_config(sim_config)
+        st.success("当前交通设置已应用，将在下一次自动推进或恢复行驶时生效。")
+
     traffic_snapshot: TrafficSnapshot | None = (
         traffic_engine.current_snapshot() if bool(traffic_enabled) and traffic_engine is not None else None
     )
 
-    # graph 是当前 planning_graph。交通关闭时等于 base_graph；交通开启时来自 SimulationEngine 当前状态。
-    graph = _planning_graph(base_graph, bool(traffic_enabled), traffic_engine)
+    # graph 是当前 planning_graph。自动行驶启动后即使不显示交通图层，也使用 SimulationEngine 当前图。
+    graph = _planning_graph(
+        base_graph,
+        bool(traffic_enabled) or bool(st.session_state.get("simulation_started")),
+        traffic_engine,
+    )
     default_start_lat, default_start_lon, default_goal_lat, default_goal_lon = _default_points(base_graph)
 
     # 起终点输入仍使用经纬度。真正用于 SNN 的是 snap 后的 node id。
     col_a, col_b, col_c, col_d = st.columns(4)
-    start_lat = col_a.number_input("Start latitude", value=float(default_start_lat), format="%.7f")
-    start_lon = col_b.number_input("Start longitude", value=float(default_start_lon), format="%.7f")
-    goal_lat = col_c.number_input("Goal latitude", value=float(default_goal_lat), format="%.7f")
-    goal_lon = col_d.number_input("Goal longitude", value=float(default_goal_lon), format="%.7f")
+    start_lat = col_a.number_input("起点纬度", value=float(default_start_lat), format="%.7f")
+    start_lon = col_b.number_input("起点经度", value=float(default_start_lon), format="%.7f")
+    goal_lat = col_c.number_input("终点纬度", value=float(default_goal_lat), format="%.7f")
+    goal_lon = col_d.number_input("终点经度", value=float(default_goal_lon), format="%.7f")
+
+    coordinate_errors = _validate_hangzhou_coordinates(
+        float(start_lat),
+        float(start_lon),
+        float(goal_lat),
+        float(goal_lon),
+    )
+    for error in coordinate_errors:
+        st.error(error)
 
     # snap 用 base_graph 做，避免交通导致的 blocked 状态影响“最近道路节点”的选择。
     # 规划和可达性检查则用当前 graph，让交通阻塞影响路径结果。
@@ -638,81 +781,149 @@ def main() -> None:
     goal_node = nearest_node_by_latlon(base_graph, float(goal_lat), float(goal_lon))
     path_exists, reachability_message = _reachability_status(graph, start_node, goal_node)
 
-    # 三个主要动作：
-    # 1. Run SNN Navigation：无交通时直接规划；有交通时启动 SimulationEngine 和导航车辆；
-    # 2. Step Dynamic Traffic：推进在线仿真，路由器只看当前 graph edge state；
-    # 3. Clear Traffic：清空车辆、事件和动态边状态。
-    run_col, traffic_col, clear_col = st.columns(3)
-    run_clicked = run_col.button("Run SNN Navigation", type="primary")
-    traffic_clicked = traffic_col.button("Step Dynamic Traffic", disabled=not bool(traffic_enabled))
-    clear_traffic_clicked = clear_col.button("Clear Traffic", disabled=traffic_engine is None)
-    if clear_traffic_clicked:
-        # 清空交通时不删除 base_graph，只删除动态仿真状态和旧结果。
-        st.session_state.traffic_engine = None
-        st.session_state.traffic_snapshot = None
-        st.session_state.traffic_step_result = None
-        st.session_state.traffic_step = 0
-        traffic_engine = None
-        traffic_snapshot = None
-        graph = _planning_graph(base_graph, bool(traffic_enabled), traffic_engine)
-        st.session_state.navigation_result = None
-
     def _project_route_planner(route_graph: nx.DiGraph, source: int, target: int) -> NavigationResult:
         # DynamicRouter 调用该函数时，只传入当前 graph；不会接触未来事件或未来车辆状态。
         return run_navigation(route_graph, source, target, use_loihi=bool(use_loihi))
 
+    # 主要动作：
+    # 1. 运行 SNN 导航：生成当前路线和 wavefront；
+    # 2. 开始/暂停/结束：控制车辆自动沿当前路线推进；
+    # 3. 恢复开始时强制检查一次当前拥堵状态下是否需要重规划。
+    run_col, start_col, pause_col, end_col = st.columns(4)
+    run_clicked = run_col.button("运行 SNN 导航", type="primary", disabled=bool(coordinate_errors))
+    start_clicked = start_col.button("开始", disabled=bool(coordinate_errors))
+    pause_clicked = pause_col.button("暂停", disabled=not bool(st.session_state.get("simulation_started")))
+    end_clicked = end_col.button("结束", disabled=not bool(st.session_state.get("simulation_started")))
+
     if run_clicked:
-        with st.spinner("Running SNN wavefront navigation..."):
-            if traffic_enabled:
-                traffic_engine = SimulationEngine(base_graph, config=sim_config)
-                st.session_state.traffic_engine = traffic_engine
-                st.session_state.navigation_result = traffic_engine.start_navigation(
-                    start_node,
-                    goal_node,
-                    route_planner=_project_route_planner,
-                )
+        try:
+            with st.spinner("正在运行 SNN 波前导航..."):
+                _reset_playback_state(st.session_state)
+                st.session_state.last_start_node = int(start_node)
+                st.session_state.last_goal_node = int(goal_node)
+                if traffic_enabled:
+                    traffic_engine = SimulationEngine(base_graph, config=sim_config)
+                    st.session_state.traffic_engine = traffic_engine
+                    st.session_state.navigation_result = traffic_engine.start_navigation(
+                        start_node,
+                        goal_node,
+                        route_planner=_project_route_planner,
+                    )
+                    traffic_snapshot = traffic_engine.current_snapshot()
+                    st.session_state.traffic_snapshot = traffic_snapshot
+                    graph = traffic_engine.graph
+                else:
+                    st.session_state.traffic_engine = None
+                    traffic_engine = None
+                    traffic_snapshot = None
+                    st.session_state.traffic_snapshot = None
+                    st.session_state.traffic_step_result = None
+                    st.session_state.traffic_step = 0
+                    # run_navigation 内部会执行 DiGraph -> SNN wavefront -> parent trace -> NavigationResult。
+                    st.session_state.navigation_result = run_navigation(
+                        graph,
+                        start_node,
+                        goal_node,
+                        use_loihi=bool(use_loihi),
+                    )
+        except Exception as exc:
+            st.error(f"运行 SNN 导航失败：{exc}")
+
+    result_for_start: NavigationResult | None = st.session_state.get("navigation_result")
+    if start_clicked:
+        if result_for_start is None:
+            st.warning("请先加载杭州地图并运行 SNN 导航。")
+        elif not result_for_start.path_nodes:
+            st.warning("当前没有可行路径，无法开始自动行驶。")
+        else:
+            try:
+                if traffic_engine is None:
+                    traffic_engine = SimulationEngine(base_graph, config=sim_config)
+                    st.session_state.traffic_engine = traffic_engine
+                    st.session_state.navigation_result = traffic_engine.start_navigation(
+                        start_node,
+                        goal_node,
+                        route_planner=_project_route_planner,
+                    )
+                else:
+                    traffic_engine.update_config(sim_config)
+                    if traffic_engine.navigation_vehicle is None or traffic_engine.navigation_vehicle.arrived:
+                        st.session_state.navigation_result = traffic_engine.start_navigation(
+                            start_node,
+                            goal_node,
+                            route_planner=_project_route_planner,
+                        )
+                # 恢复行驶时立即基于当前 graph edge 状态检查是否重规划。
+                traffic_engine.check_navigation_reroute(route_planner=_project_route_planner, force=True)
+                st.session_state.navigation_result = traffic_engine.navigation_result or st.session_state.navigation_result
                 traffic_snapshot = traffic_engine.current_snapshot()
                 st.session_state.traffic_snapshot = traffic_snapshot
-                graph = traffic_engine.graph
-            else:
-                # run_navigation 内部会执行 DiGraph -> SNN wavefront -> parent trace -> NavigationResult。
-                st.session_state.navigation_result = run_navigation(
-                    graph,
-                    start_node,
-                    goal_node,
-                    use_loihi=bool(use_loihi),
-                )
-    if traffic_clicked:
-        if traffic_engine is None:
-            traffic_engine = SimulationEngine(base_graph, config=sim_config)
-            st.session_state.traffic_engine = traffic_engine
-            traffic_engine.start_navigation(start_node, goal_node, route_planner=_project_route_planner)
-        with st.spinner("Advancing dynamic traffic and checking reroute..."):
-            step_result = None
-            for _ in range(int(traffic_steps_per_click)):
-                step_result = traffic_engine.step(route_planner=_project_route_planner)
-            st.session_state.traffic_step_result = step_result
-            st.session_state.traffic_step = int(st.session_state.get("traffic_step", 0)) + int(traffic_steps_per_click)
-            st.session_state.navigation_result = traffic_engine.navigation_result
-            traffic_snapshot = traffic_engine.current_snapshot()
-            st.session_state.traffic_snapshot = traffic_snapshot
-            graph = traffic_engine.graph
+                _start_playback_state(st.session_state)
+                st.success("车辆开始自动行驶。")
+            except Exception as exc:
+                st.error(f"开始自动行驶失败：{exc}")
 
-    # 按最新 graph 再做一次可达性检查。traffic_clicked 后 graph 可能已经变化。
+    if pause_clicked:
+        _pause_playback_state(st.session_state)
+        st.warning("导航已暂停。")
+
+    if end_clicked:
+        _finish_playback_state(st.session_state, "导航已结束")
+        st.info("导航已结束。")
+
+    if st.session_state.get("vehicle_running") and traffic_engine is not None:
+        traffic_engine.update_config(sim_config)
+        step_result = None
+        for _ in range(int(traffic_steps_per_refresh)):
+            step_result = traffic_engine.step(route_planner=_project_route_planner)
+        st.session_state.traffic_step_result = step_result
+        st.session_state.traffic_step = int(st.session_state.get("traffic_step", 0)) + int(traffic_steps_per_refresh)
+        st.session_state.navigation_result = traffic_engine.navigation_result
+        st.session_state.auto_sim_time = float(traffic_engine.current_time)
+        traffic_snapshot = traffic_engine.current_snapshot()
+        st.session_state.traffic_snapshot = traffic_snapshot
+        if traffic_engine.navigation_vehicle is not None and traffic_engine.navigation_vehicle.arrived:
+            _finish_playback_state(st.session_state, "车辆已到达终点")
+            st.success("车辆已到达终点。")
+
+    # 按最新 graph 再做一次可达性检查。自动推进后 graph 可能已经变化。
+    traffic_engine = st.session_state.get("traffic_engine")
+    traffic_snapshot = (
+        traffic_engine.current_snapshot() if bool(traffic_enabled) and traffic_engine is not None else None
+    )
+    graph = _planning_graph(
+        base_graph,
+        bool(traffic_enabled) or bool(st.session_state.get("simulation_started")),
+        traffic_engine,
+    )
     path_exists, reachability_message = _reachability_status(graph, start_node, goal_node)
-    if path_exists:
+    if coordinate_errors:
+        pass
+    elif path_exists:
         st.caption(reachability_message)
     else:
-        st.warning(f"{reachability_message} The goal neuron will not spike for this directed route.")
+        st.warning(f"{reachability_message} 目标神经元不会在该有向路线中发放。")
 
     result: NavigationResult | None = st.session_state.get("navigation_result")
-    # path_points 是最终路径的折线坐标，用于小车 slider 和地图缩放。
+    if result is not None:
+        if result.metadata.get("success"):
+            st.success("导航成功。")
+        else:
+            st.warning("导航失败：未找到可行路径。")
+    status_message = st.session_state.get("navigation_status_message")
+    if status_message:
+        if status_message == "车辆已到达终点":
+            st.success(status_message)
+        elif status_message == "导航已暂停":
+            st.warning(status_message)
+        else:
+            st.info(status_message)
+
+    # path_points 是最终路径的折线坐标，用于地图缩放。
     path_points = path_nodes_to_latlon(graph, result.path_nodes) if result else []
-    simulation_vehicle = traffic_engine.navigation_vehicle if bool(traffic_enabled) and traffic_engine is not None else None
+    simulation_vehicle = traffic_engine.navigation_vehicle if traffic_engine is not None else None
     actual_car_point = _vehicle_position_latlon(graph, edge_lookup, simulation_vehicle)
     car_index = 0
-    if len(path_points) > 1 and simulation_vehicle is None:
-        car_index = st.slider("Car position", 0, len(path_points) - 1, 0)
     wave_time_ms = 0
     wavefront_frame = WavefrontFrame(t=0, active_nodes=[], active_edges=[])
     max_wave_time_ms = _wavefront_time_limit(result)
@@ -720,10 +931,10 @@ def main() -> None:
         # 即使没有找到最终路径，wavefront 也可能传播到部分可达节点。
         # 这时仍允许用户查看局部扩散过程。
         if not result.metadata.get("success"):
-            st.warning("No final path was found. The wavefront frames below show partial propagation only.")
+            st.warning("未找到最终路径，下方波前帧仅显示局部传播结果。")
         if max_wave_time_ms > 0:
             wave_time_ms = st.slider(
-                "Wavefront timestep (ms)",
+                "波前时间步（毫秒）",
                 0,
                 max_wave_time_ms,
                 max_wave_time_ms,
@@ -733,7 +944,7 @@ def main() -> None:
 
     # Folium 地图每次 rerun 都重新生成。prefer_canvas=True 可以缓解大量线段绘制的卡顿。
     center = _graph_center(graph)
-    fmap = folium.Map(location=center, zoom_start=14, tiles=tiles, prefer_canvas=True, control_scale=True)
+    fmap = folium.Map(location=center, zoom_start=14, tiles=FOLIUM_TILE_NAME, prefer_canvas=True, control_scale=True)
     if draw_base_roads:
         # 普通道路底图；关闭后拖动小车或 wavefront 会更流畅。
         _add_network_edges(folium, fmap, edge_points, int(max_edges))
@@ -773,65 +984,70 @@ def main() -> None:
 
     # 指标区：展示 snap 后节点、路径长度、通行时间和 SNN 运行耗时。
     metric_cols = st.columns(6)
-    metric_cols[0].metric("Start node", str(start_node))
-    metric_cols[1].metric("Goal node", str(goal_node))
-    metric_cols[2].metric("Path nodes", str(len(result.path_nodes) if result else 0))
+    metric_cols[0].metric("起点节点", str(start_node))
+    metric_cols[1].metric("终点节点", str(goal_node))
+    metric_cols[2].metric("路径节点数", str(len(result.path_nodes) if result else 0))
     metric_cols[3].metric(
-        "Path length",
+        "路径长度",
         f"{_metric_float(result, 'path_length_m'):.1f} m",
     )
     metric_cols[4].metric(
-        "Travel time",
+        "预计通行时间",
         f"{_metric_float(result, 'path_travel_time_s'):.1f} s",
     )
     metric_cols[5].metric(
-        "SNN runtime",
+        "SNN 运行耗时",
         f"{_metric_float(result, 'snn_runtime_sec'):.3f} s",
     )
-    if traffic_enabled:
+    if traffic_engine is not None:
         # 动态交通指标区：全部来自当前 SimulationEngine 状态，不含未来信息。
-        metrics = traffic_engine.metrics.metrics if traffic_engine is not None else None
+        metrics = traffic_engine.metrics.metrics
         traffic_cols = st.columns(5)
-        traffic_cols[0].metric("Sim time", f"{traffic_engine.current_time:.1f} s" if traffic_engine else "0.0 s")
-        traffic_cols[1].metric("Vehicles", str(len(traffic_engine.vehicles) if traffic_engine else 0))
+        traffic_cols[0].metric("仿真时间", f"{traffic_engine.current_time:.1f} s")
+        traffic_cols[1].metric("车辆数", str(len(traffic_engine.vehicles)))
         traffic_cols[2].metric(
-            "Avg speed",
-            f"{metrics.average_network_speed:.1f} m/s" if metrics else "0.0 m/s",
+            "平均速度",
+            f"{metrics.average_network_speed:.1f} m/s",
         )
         traffic_cols[3].metric(
-            "Congested edges",
-            str(metrics.number_of_congested_edges if metrics else 0),
+            "拥堵路段",
+            str(metrics.number_of_congested_edges),
         )
-        traffic_cols[4].metric("Reroutes", str(metrics.number_of_reroutes if metrics else 0))
+        traffic_cols[4].metric("重规划次数", str(metrics.number_of_reroutes))
 
-    # JSON 调试区：保留关键状态，方便定位“目标 neuron 是否发放”“是否因为交通 blocked 不可达”等问题。
-    st.json(
-        {
-            "total_cost": result.total_cost if result else None,
-            "backend": result.metadata.get("backend") if result else None,
-            "success": result.metadata.get("success") if result else None,
-            "wavefront_steps": len(result.wavefront_frames) if result else 0,
-            "target_arrival_time_ms": result.metadata.get("target_arrival_time_ms") if result else None,
-            "error": result.metadata.get("error") if result else None,
-            "loihi_error": result.metadata.get("loihi_error") if result else None,
-            "directed_path_exists": path_exists,
-            "traffic_enabled": bool(traffic_enabled),
-            "traffic_step": int(st.session_state.get("traffic_step", 0)),
-            "simulation_time": traffic_engine.current_time if traffic_engine else 0.0,
-            "traffic_vehicle_count": len(traffic_engine.vehicles) if traffic_engine else 0,
-            "traffic_congested_edges": len(traffic_snapshot.congested_edges) if traffic_snapshot else 0,
-            "active_incidents": len(traffic_engine.incident_generator.active_incidents(traffic_engine.current_time))
-            if traffic_engine
-            else 0,
-            "metrics": traffic_engine.metrics.metrics.to_dict() if traffic_engine else {},
-            "last_reroute": asdict(traffic_engine.last_reroute_decision)
-            if traffic_engine and traffic_engine.last_reroute_decision
-            else None,
-        }
-    )
+    # 调试区：保留关键状态，方便定位“目标 neuron 是否发放”“是否因为交通 blocked 不可达”等问题。
+    with st.expander("调试信息 / 元数据 / 日志", expanded=False):
+        st.json(
+            {
+                "总成本": result.total_cost if result else None,
+                "后端": result.metadata.get("backend") if result else None,
+                "导航状态": _navigation_status_label(result),
+                "波前帧数": len(result.wavefront_frames) if result else 0,
+                "目标发放时间（毫秒）": result.metadata.get("target_arrival_time_ms") if result else None,
+                "错误": result.metadata.get("error") if result else None,
+                "Loihi 错误": result.metadata.get("loihi_error") if result else None,
+                "存在有向路径": path_exists,
+                "启用模拟交通": bool(traffic_enabled),
+                "交通步数": int(st.session_state.get("traffic_step", 0)),
+                "仿真时间": traffic_engine.current_time if traffic_engine else 0.0,
+                "交通车辆数": len(traffic_engine.vehicles) if traffic_engine else 0,
+                "拥堵路段数": len(traffic_snapshot.congested_edges) if traffic_snapshot else 0,
+                "活跃事故/施工数": len(traffic_engine.incident_generator.active_incidents(traffic_engine.current_time))
+                if traffic_engine
+                else 0,
+                "指标": traffic_engine.metrics.metrics.to_dict() if traffic_engine else {},
+                "最近一次重规划": _reroute_decision_payload(traffic_engine.last_reroute_decision)
+                if traffic_engine
+                else None,
+            }
+        )
     if result and result.metadata.get("error"):
         # path reconstruction 或后端返回的错误会在这里显示。
-        st.warning(result.metadata["error"])
+        st.warning(f"导航错误：{result.metadata['error']}")
+
+    if st.session_state.get("vehicle_running") and st.session_state.get("traffic_engine") is not None:
+        time.sleep(0.35)
+        st.rerun()
 
 
 if __name__ == "__main__":

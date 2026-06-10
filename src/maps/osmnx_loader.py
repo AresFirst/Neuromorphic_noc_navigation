@@ -32,6 +32,14 @@ class BoundingBox:
     west: float
 
 
+# Web GUI 固定使用杭州区域。这里选择覆盖杭州主要城区的 bbox，避免首次下载整个
+# 行政区导致图规模过大，同时保证起终点输入被限制在杭州市范围内。
+HANGZHOU_PLACE_NAME = "Hangzhou, Zhejiang, China"
+HANGZHOU_BBOX = BoundingBox(north=30.420000, south=30.080000, east=120.360000, west=119.950000)
+DEFAULT_FIXED_MAP_REGION = "浙江省杭州市"
+HANGZHOU_CACHE_FILENAME_TEMPLATE = "hangzhou_{network_type}.graphml"
+
+
 def _import_osmnx():
     # OSMnx 是可选的大依赖；运行测试或离线 fallback 时不希望模块导入阶段直接失败。
     try:
@@ -73,6 +81,16 @@ def _cache_path(
     else:
         raise ValueError("place_name or bbox is required")
     return root / f"{slug}.graphml"
+
+
+def _fixed_cache_path(*, cache_dir: str | Path, cache_filename: str) -> Path:
+    # 固定地图缓存文件名不依赖用户输入；只允许简单文件名，避免意外写出缓存目录。
+    filename = Path(cache_filename).name
+    if not filename.endswith(".graphml"):
+        filename = f"{filename}.graphml"
+    root = Path(cache_dir).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / filename
 
 
 def _graph_from_bbox(ox: Any, bbox: BoundingBox, network_type: str) -> nx.MultiDiGraph:
@@ -276,6 +294,7 @@ def load_osm_graph(
     network_type: str = "drive",
     cache_dir: str | Path = "data/osm_cache",
     use_cache: bool = True,
+    cache_filename: str | None = None,
 ) -> nx.MultiDiGraph:
     """Load a real road network from cache or OpenStreetMap.
 
@@ -290,11 +309,15 @@ def load_osm_graph(
         ox = _import_osmnx()
     except RuntimeError:
         ox = None
-    path = _cache_path(
-        cache_dir=cache_dir,
-        place_name=place_name,
-        bbox=bbox,
-        network_type=network_type,
+    path = (
+        _fixed_cache_path(cache_dir=cache_dir, cache_filename=cache_filename)
+        if cache_filename
+        else _cache_path(
+            cache_dir=cache_dir,
+            place_name=place_name,
+            bbox=bbox,
+            network_type=network_type,
+        )
     )
     if use_cache and path.exists():
         # 缓存命中时不访问网络，便于离线演示和重复调试。
@@ -324,3 +347,19 @@ def load_osm_graph(
     if use_cache:
         _save_graphml(graph, path, ox)
     return graph
+
+
+def load_hangzhou_graph(
+    *,
+    network_type: str = "drive",
+    cache_dir: str | Path = "data/osm_cache",
+    use_cache: bool = True,
+) -> nx.MultiDiGraph:
+    """Load the fixed Hangzhou road network, preferring a stable local cache."""
+    return load_osm_graph(
+        bbox=HANGZHOU_BBOX,
+        network_type=network_type,
+        cache_dir=cache_dir,
+        use_cache=use_cache,
+        cache_filename=HANGZHOU_CACHE_FILENAME_TEMPLATE.format(network_type=network_type),
+    )

@@ -124,6 +124,37 @@ class SimulationEngine:
         )
         return self.navigation_result
 
+    def update_config(self, config: SimulationEngineConfig) -> None:
+        """Apply new runtime parameters without resetting current vehicles/events."""
+        self.config = config
+        self.flow_generator.config = config.flow or FlowGeneratorConfig(random_seed=config.random_seed)
+        self.incident_generator.config = config.incidents or IncidentGeneratorConfig(random_seed=config.random_seed + 1)
+        self.vehicle_simulator.config = config.vehicle_simulator or VehicleSimulatorConfig()
+        self.state_updater.config = config.updater or TrafficStateUpdaterConfig()
+        self.dynamic_router.config = config.router or DynamicRouterConfig()
+
+    def check_navigation_reroute(
+        self,
+        *,
+        route_planner: RoutePlanner | None = None,
+        force: bool = False,
+    ) -> RerouteDecision | None:
+        """Check the navigation vehicle against the current edge state."""
+        if self.navigation_vehicle is None:
+            return None
+        decision = self.dynamic_router.maybe_reroute(
+            self.graph,
+            self.navigation_vehicle,
+            current_time=self.current_time,
+            route_planner=route_planner,
+            force=force,
+        )
+        self.last_reroute_decision = decision
+        if decision and decision.rerouted:
+            self.previous_navigation_route = decision.old_route
+            self._refresh_navigation_result_after_reroute()
+        return decision
+
     def _split_vehicles(self, vehicles: list[Vehicle]) -> None:
         self.background_vehicles = [vehicle for vehicle in vehicles if vehicle.is_background_vehicle and not vehicle.arrived]
         nav = [vehicle for vehicle in vehicles if not vehicle.is_background_vehicle and not vehicle.arrived]
@@ -170,16 +201,7 @@ class SimulationEngine:
 
         decision = None
         if self.navigation_vehicle is not None:
-            decision = self.dynamic_router.maybe_reroute(
-                self.graph,
-                self.navigation_vehicle,
-                current_time=self.current_time,
-                route_planner=route_planner,
-            )
-            self.last_reroute_decision = decision
-            if decision and decision.rerouted:
-                self.previous_navigation_route = decision.old_route
-                self._refresh_navigation_result_after_reroute()
+            decision = self.check_navigation_reroute(route_planner=route_planner)
 
         self.metrics.record_network(self.graph)
         self.metrics.record_navigation_vehicle(self.navigation_vehicle)
