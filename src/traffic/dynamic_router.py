@@ -13,6 +13,15 @@ from .vehicle import Vehicle
 RoutePlanner = Callable[[nx.DiGraph, int, int], Any]
 
 
+def _routable_view(graph: nx.DiGraph) -> nx.DiGraph:
+    return nx.subgraph_view(
+        graph,
+        filter_node=lambda node: not bool(graph.nodes[node].get("snn_neuron_closed", False)),
+        filter_edge=lambda u, v: graph[u][v].get("state") != "blocked"
+        and not bool(graph[u][v].get("snn_synapse_closed", False)),
+    )
+
+
 @dataclass(slots=True)
 class RoutePlan:
     route: list[int]
@@ -68,7 +77,15 @@ class DynamicRouter:
                 self.last_plan = RoutePlan(route=route, eta=eta, backend=backend, raw_result=raw_result)
                 return self.last_plan
 
-        route = [int(node) for node in nx.shortest_path(graph, int(source), int(destination), weight="travel_time")]
+        route = [
+            int(node)
+            for node in nx.shortest_path(
+                _routable_view(graph),
+                int(source),
+                int(destination),
+                weight="travel_time",
+            )
+        ]
         self.last_plan = RoutePlan(route=route, eta=route_eta(graph, route, weight="travel_time"))
         return self.last_plan
 
@@ -81,6 +98,21 @@ class DynamicRouter:
 
     def _old_remaining_eta(self, graph: nx.DiGraph, vehicle: Vehicle) -> float:
         return route_eta(graph, self._remaining_route_from_edge_end(vehicle), weight="travel_time")
+
+    def _reroute_planning_graph(self, graph: nx.DiGraph, vehicle: Vehicle) -> nx.DiGraph:
+        edge = vehicle.current_edge
+        if edge is None:
+            return graph
+        current_u, current_v = edge
+        reverse_edge = (int(current_v), int(current_u))
+        if not graph.has_edge(*reverse_edge):
+            return graph
+        planning_graph = graph.copy()
+        attrs = planning_graph[reverse_edge[0]][reverse_edge[1]]
+        attrs["state"] = "blocked"
+        attrs["snn_synapse_closed"] = True
+        attrs["immediate_backtrack_blocked"] = True
+        return planning_graph
 
     def _lookahead_congested_edges(self, graph: nx.DiGraph, vehicle: Vehicle) -> list[tuple[int, int]]:
         edges: list[tuple[int, int]] = []
@@ -131,7 +163,8 @@ class DynamicRouter:
         affected_edges = self._lookahead_congested_edges(graph, vehicle)
 
         try:
-            new_plan = self.plan_route(graph, source, vehicle.destination, route_planner=route_planner)
+            planning_graph = self._reroute_planning_graph(graph, vehicle)
+            new_plan = self.plan_route(planning_graph, source, vehicle.destination, route_planner=route_planner)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return RerouteDecision(
                 rerouted=False,

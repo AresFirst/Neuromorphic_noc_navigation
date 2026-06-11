@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import networkx as nx
 
-from maps import osmnx_multidigraph_to_digraph, path_nodes_to_latlon
+from maps import make_bidirectional_roads, osmnx_multidigraph_to_digraph, path_nodes_to_latlon
+
+
+class _FakeGeometry:
+    def __init__(self, coords):
+        self.coords = coords
 
 
 def _parallel_osm_graph() -> nx.MultiDiGraph:
@@ -82,3 +87,39 @@ def test_delay_ms_is_capped_for_loihi_but_cost_is_preserved():
     assert adapted[0][1]["raw_delay_ms"] == 120
     assert adapted[0][1]["delay_ms"] == 62
     assert adapted.graph["delay_encoding"]["max_ms"] == 62
+
+
+def test_make_bidirectional_roads_adds_reverse_edges_without_losing_costs():
+    graph = osmnx_multidigraph_to_digraph(_parallel_osm_graph())
+
+    bidirectional = make_bidirectional_roads(graph)
+
+    assert bidirectional.graph["bidirectional_roads"] is True
+    assert bidirectional.has_edge(1, 0)
+    assert bidirectional.has_edge(2, 1)
+    assert bidirectional[1][0]["cost"] == graph[0][1]["cost"]
+    assert bidirectional[1][0]["delay_ms"] == graph[0][1]["delay_ms"]
+    assert bidirectional[1][0]["synthetic_reverse_edge"] is True
+    synapse_indexes = [
+        int(attrs["snn_synapse_index"])
+        for _u, _v, attrs in bidirectional.edges(data=True)
+    ]
+    assert len(synapse_indexes) == len(set(synapse_indexes))
+
+
+def test_synthetic_reverse_edge_geometry_is_drawn_in_route_direction():
+    graph = nx.MultiDiGraph()
+    graph.add_node("a", x=0.0, y=0.0)
+    graph.add_node("b", x=1.0, y=1.0)
+    graph.add_edge(
+        "a",
+        "b",
+        length=100.0,
+        travel_time=10.0,
+        geometry=_FakeGeometry([(0.0, 0.0), (0.4, 0.2), (1.0, 1.0)]),
+    )
+    bidirectional = make_bidirectional_roads(osmnx_multidigraph_to_digraph(graph))
+
+    reverse_points = path_nodes_to_latlon(bidirectional, [1, 0])
+
+    assert reverse_points == [(1.0, 1.0), (0.2, 0.4), (0.0, 0.0)]

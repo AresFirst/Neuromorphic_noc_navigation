@@ -32,12 +32,12 @@ class BoundingBox:
     west: float
 
 
-# Web GUI 固定使用杭州区域。这里选择覆盖杭州主要城区的 bbox，避免首次下载整个
-# 行政区导致图规模过大，同时保证起终点输入被限制在杭州市范围内。
+# Web GUI 固定使用杭州西湖/拱墅/余杭/上城附近区域。bbox 约为旧杭州固定
+# bbox 的 1/4 面积，降低首次下载、SNN 规划和 Folium 渲染压力。
 HANGZHOU_PLACE_NAME = "Hangzhou, Zhejiang, China"
-HANGZHOU_BBOX = BoundingBox(north=30.420000, south=30.080000, east=120.360000, west=119.950000)
-DEFAULT_FIXED_MAP_REGION = "浙江省杭州市"
-HANGZHOU_CACHE_FILENAME_TEMPLATE = "hangzhou_{network_type}.graphml"
+HANGZHOU_BBOX = BoundingBox(north=30.390000, south=30.220000, east=120.235000, west=120.030000)
+DEFAULT_FIXED_MAP_REGION = "杭州市西湖区 / 拱墅区 / 余杭区 / 上城区附近"
+HANGZHOU_CACHE_FILENAME_TEMPLATE = "hangzhou_core_dense_bidirectional_{network_type}.graphml"
 
 
 def _import_osmnx():
@@ -70,14 +70,15 @@ def _cache_path(
     place_name: str | None,
     bbox: BoundingBox | None,
     network_type: str,
+    simplify: bool,
 ) -> Path:
     # 同一个 place/bbox 与 network_type 对应一个缓存文件；后续加载优先复用本地 GraphML。
     root = Path(cache_dir).expanduser()
     root.mkdir(parents=True, exist_ok=True)
     if place_name:
-        slug = _safe_slug(f"{place_name}_{network_type}")
+        slug = _safe_slug(f"{place_name}_{network_type}_{'simplified' if simplify else 'dense'}")
     elif bbox:
-        slug = _safe_slug(f"{_bbox_slug(bbox)}_{network_type}")
+        slug = _safe_slug(f"{_bbox_slug(bbox)}_{network_type}_{'simplified' if simplify else 'dense'}")
     else:
         raise ValueError("place_name or bbox is required")
     return root / f"{slug}.graphml"
@@ -93,27 +94,41 @@ def _fixed_cache_path(*, cache_dir: str | Path, cache_filename: str) -> Path:
     return root / filename
 
 
-def _graph_from_bbox(ox: Any, bbox: BoundingBox, network_type: str) -> nx.MultiDiGraph:
+def _graph_from_bbox(ox: Any, bbox: BoundingBox, network_type: str, *, simplify: bool) -> nx.MultiDiGraph:
     # OSMnx 不同版本的 graph_from_bbox 参数顺序/签名不完全一致，这里兼容新旧 API。
     signature = inspect.signature(ox.graph_from_bbox)
+    supports_simplify = "simplify" in signature.parameters
+    simplify_kwargs = {"simplify": bool(simplify)} if supports_simplify else {}
     if "bbox" in signature.parameters:
         try:
             return ox.graph_from_bbox(
                 bbox=(bbox.west, bbox.south, bbox.east, bbox.north),
                 network_type=network_type,
+                **simplify_kwargs,
             )
         except TypeError:
             return ox.graph_from_bbox(
                 bbox=(bbox.north, bbox.south, bbox.east, bbox.west),
                 network_type=network_type,
+                **simplify_kwargs,
             )
-    return ox.graph_from_bbox(
-        north=bbox.north,
-        south=bbox.south,
-        east=bbox.east,
-        west=bbox.west,
-        network_type=network_type,
-    )
+    kwargs = {
+        "north": bbox.north,
+        "south": bbox.south,
+        "east": bbox.east,
+        "west": bbox.west,
+        "network_type": network_type,
+        **simplify_kwargs,
+    }
+    return ox.graph_from_bbox(**kwargs)
+
+
+def _graph_from_place(ox: Any, place_name: str, network_type: str, *, simplify: bool) -> nx.MultiDiGraph:
+    signature = inspect.signature(ox.graph_from_place)
+    kwargs = {"network_type": network_type}
+    if "simplify" in signature.parameters:
+        kwargs["simplify"] = bool(simplify)
+    return ox.graph_from_place(place_name, **kwargs)
 
 
 def _add_speed_and_travel_time(ox: Any, graph: nx.MultiDiGraph) -> nx.MultiDiGraph:
@@ -244,7 +259,6 @@ def _manual_overpass_graph(
         if len(nodes) < 2:
             continue
         speed_mps = _parse_speed_mps(tags.get("maxspeed"))
-        oneway = str(tags.get("oneway", "")).lower() in {"yes", "true", "1"}
         for u, v in zip(nodes, nodes[1:]):
             u_attrs = node_lookup[u]
             v_attrs = node_lookup[v]
@@ -255,12 +269,11 @@ def _manual_overpass_graph(
                 "highway": tags.get("highway"),
                 "length": float(length),
                 "travel_time": float(travel_time),
-                "oneway": oneway,
+                "oneway": False,
             }
             graph.add_edge(u, v, **edge_attrs)
-            if not oneway:
-                # 非单行道路补充反向边，保持有向图能够表达真实通行方向。
-                graph.add_edge(v, u, **edge_attrs)
+            # 本项目演示场景默认所有机动车道路双向可通行，不保留 OSM oneway 限制。
+            graph.add_edge(v, u, **edge_attrs)
 
     if graph.number_of_nodes() == 0 or graph.number_of_edges() == 0:
         raise RuntimeError("Overpass returned no usable road edges; try a larger bbox.")
@@ -287,6 +300,46 @@ def _save_graphml(graph: nx.MultiDiGraph, path: Path, ox: Any | None) -> None:
         nx.write_graphml(graph, path)
 
 
+def _crop_graph_to_bbox(graph: nx.MultiDiGraph, bbox: BoundingBox) -> nx.MultiDiGraph:
+    nodes = []
+    for node, attrs in graph.nodes(data=True):
+        try:
+            lon = float(attrs.get("x"))
+            lat = float(attrs.get("y"))
+        except (TypeError, ValueError):
+            continue
+        if bbox.south <= lat <= bbox.north and bbox.west <= lon <= bbox.east:
+            nodes.append(node)
+    cropped = graph.subgraph(nodes).copy()
+    if cropped.number_of_nodes() == 0 or cropped.number_of_edges() == 0:
+        raise RuntimeError("legacy Hangzhou cache does not overlap the fixed bbox")
+    cropped.graph.clear()
+    cropped.graph.update(
+        {
+            key: value
+            for key, value in graph.graph.items()
+            if isinstance(value, (str, int, float, bool))
+        }
+    )
+    cropped.graph["cropped_to_bbox"] = True
+    cropped.graph["cropped_bbox_north"] = float(bbox.north)
+    cropped.graph["cropped_bbox_south"] = float(bbox.south)
+    cropped.graph["cropped_bbox_east"] = float(bbox.east)
+    cropped.graph["cropped_bbox_west"] = float(bbox.west)
+    return cropped
+
+
+def _graph_is_unsimplified(graph: nx.MultiDiGraph) -> bool:
+    value = graph.graph.get("simplified")
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "no"}
+    if value is False:
+        return True
+    if graph.graph.get("loader") == "manual_overpass_fallback":
+        return True
+    return False
+
+
 def load_osm_graph(
     *,
     place_name: str | None = None,
@@ -295,6 +348,7 @@ def load_osm_graph(
     cache_dir: str | Path = "data/osm_cache",
     use_cache: bool = True,
     cache_filename: str | None = None,
+    simplify: bool = True,
 ) -> nx.MultiDiGraph:
     """Load a real road network from cache or OpenStreetMap.
 
@@ -317,6 +371,7 @@ def load_osm_graph(
             place_name=place_name,
             bbox=bbox,
             network_type=network_type,
+            simplify=bool(simplify),
         )
     )
     if use_cache and path.exists():
@@ -329,10 +384,10 @@ def load_osm_graph(
             try:
                 if place_name:
                     # place 模式由 OSMnx 按地名/行政边界解析真实道路网络。
-                    graph = ox.graph_from_place(place_name, network_type=network_type)
+                    graph = _graph_from_place(ox, place_name, network_type, simplify=bool(simplify))
                 else:
                     # bbox 模式只取矩形范围内道路，最适合控制 neuron 规模和 GUI 性能。
-                    graph = _graph_from_bbox(ox, bbox, network_type)
+                    graph = _graph_from_bbox(ox, bbox, network_type, simplify=bool(simplify))
                 graph = _add_speed_and_travel_time(ox, graph)
             except Exception:
                 graph = _manual_overpass_graph(place_name=place_name, bbox=bbox, network_type=network_type)
@@ -356,10 +411,33 @@ def load_hangzhou_graph(
     use_cache: bool = True,
 ) -> nx.MultiDiGraph:
     """Load the fixed Hangzhou road network, preferring a stable local cache."""
+    fixed_cache = _fixed_cache_path(
+        cache_dir=cache_dir,
+        cache_filename=HANGZHOU_CACHE_FILENAME_TEMPLATE.format(network_type=network_type),
+    )
+    legacy_caches = [
+        _fixed_cache_path(cache_dir=cache_dir, cache_filename=f"hangzhou_core_bidirectional_{network_type}.graphml"),
+        _fixed_cache_path(cache_dir=cache_dir, cache_filename=f"hangzhou_{network_type}.graphml"),
+    ]
+    if use_cache and not fixed_cache.exists():
+        try:
+            ox = _import_osmnx()
+        except RuntimeError:
+            ox = None
+        for legacy_cache in legacy_caches:
+            if not legacy_cache.exists():
+                continue
+            legacy_graph = _load_graphml(legacy_cache, ox)
+            if not _graph_is_unsimplified(legacy_graph):
+                continue
+            cropped = _crop_graph_to_bbox(legacy_graph, HANGZHOU_BBOX)
+            _save_graphml(cropped, fixed_cache, ox)
+            return cropped
     return load_osm_graph(
         bbox=HANGZHOU_BBOX,
         network_type=network_type,
         cache_dir=cache_dir,
         use_cache=use_cache,
         cache_filename=HANGZHOU_CACHE_FILENAME_TEMPLATE.format(network_type=network_type),
+        simplify=False,
     )

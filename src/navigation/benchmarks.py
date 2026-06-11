@@ -23,6 +23,7 @@ class AlgorithmBenchmarkResult:
     total_cost: float | None = None
     path_length_m: float = 0.0
     path_travel_time_s: float = 0.0
+    runtime_scope: str = "隔离图快照上的完整路径重算"
     error: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -78,7 +79,12 @@ def _weight_function(cost_attr: str) -> Callable[[int, int, dict[str, object]], 
 
 def _routable_view(graph: nx.DiGraph) -> nx.DiGraph:
     # Match the SNN blocked-edge contract without mutating or copying graph data.
-    return nx.subgraph_view(graph, filter_edge=lambda u, v: graph[u][v].get("state") != "blocked")
+    return nx.subgraph_view(
+        graph,
+        filter_node=lambda node: not bool(graph.nodes[node].get("snn_neuron_closed", False)),
+        filter_edge=lambda u, v: graph[u][v].get("state") != "blocked"
+        and not bool(graph[u][v].get("snn_synapse_closed", False)),
+    )
 
 
 def _path_edges(path_nodes: list[int]) -> list[tuple[int, int]]:
@@ -198,11 +204,13 @@ def _run_single_benchmark(
     *,
     cost_attr: str,
     algorithm: str,
+    copy_graph: bool,
 ) -> AlgorithmBenchmarkResult:
     label, route_function = ALGORITHMS[algorithm]
     started = time.perf_counter()
     try:
-        path_nodes = route_function(graph, int(start_node), int(goal_node), cost_attr)
+        planning_graph = graph.copy() if copy_graph else graph
+        path_nodes = route_function(planning_graph, int(start_node), int(goal_node), cost_attr)
         runtime_sec = time.perf_counter() - started
         return AlgorithmBenchmarkResult(
             algorithm=algorithm,
@@ -211,9 +219,9 @@ def _run_single_benchmark(
             runtime_sec=float(runtime_sec),
             path_nodes=path_nodes,
             path_edges=_path_edges(path_nodes),
-            total_cost=_path_cost(graph, path_nodes, cost_attr),
-            path_length_m=_path_attr_sum(graph, path_nodes, "length"),
-            path_travel_time_s=_path_attr_sum(graph, path_nodes, "travel_time"),
+            total_cost=_path_cost(planning_graph, path_nodes, cost_attr),
+            path_length_m=_path_attr_sum(planning_graph, path_nodes, "length"),
+            path_travel_time_s=_path_attr_sum(planning_graph, path_nodes, "travel_time"),
         )
     except Exception as exc:
         runtime_sec = time.perf_counter() - started
@@ -233,6 +241,7 @@ def run_algorithm_benchmarks(
     *,
     cost_attr: str = "cost",
     algorithms: Sequence[str] = ("dijkstra", "astar"),
+    copy_graph_per_algorithm: bool = True,
 ) -> dict[str, dict[str, object]]:
     """Run classical path algorithms without sharing route state between them."""
     results: dict[str, dict[str, object]] = {}
@@ -254,6 +263,7 @@ def run_algorithm_benchmarks(
             int(goal_node),
             cost_attr=cost_attr,
             algorithm=str(algorithm),
+            copy_graph=bool(copy_graph_per_algorithm),
         )
         results[str(algorithm)] = result.to_dict()
     return results

@@ -80,9 +80,13 @@ def event_driven_wavefront(
             break
 
         # 将波前传播到所有未阻塞的邻居
+        if G.nodes[node].get("snn_neuron_closed", False):
+            continue
         for neighbor, attrs in G[node].items():
+            if G.nodes[neighbor].get("snn_neuron_closed", False):
+                continue
             # 跳过阻塞边
-            if attrs.get("state") == blocked_state:
+            if attrs.get("state") == blocked_state or attrs.get("snn_synapse_closed"):
                 continue
             delay = int(attrs.get(delay_attr, 0))
             if delay <= 0:

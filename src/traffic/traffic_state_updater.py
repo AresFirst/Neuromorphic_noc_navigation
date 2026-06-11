@@ -54,6 +54,9 @@ class TrafficStateUpdater:
     ) -> nx.DiGraph:
         """Update graph edge attributes for the current timestep."""
         initialize_edge_state(graph, current_time=current_time)
+        for _node, attrs in graph.nodes(data=True):
+            attrs["snn_neuron_closed"] = False
+            attrs["traffic_node_congestion"] = 0.0
 
         vehicle_counts: dict[tuple[int, int], int] = {}
         for vehicle in vehicles:
@@ -105,5 +108,17 @@ class TrafficStateUpdater:
             attrs["active_incident_ids"] = ",".join(event_ids)
             attrs["cost"] = float(travel_time)
             attrs["delay_ms"] = clamp_delay_ms(float(travel_time))
+            attrs["snn_synapse_closed"] = False
             attrs["state"] = "congested" if congestion_level >= float(self.config.congested_threshold) else "normal"
+            if capacity_multiplier <= 0.05 or speed_multiplier <= 0.05:
+                attrs["current_speed"] = max(0.1, free_flow_speed * 0.01)
+                attrs["travel_time"] = max(float(travel_time), float(free_flow_time) * 100.0)
+                attrs["cost"] = float(attrs["travel_time"])
+                attrs["delay_ms"] = clamp_delay_ms(float(attrs["travel_time"]))
+                attrs["congestion_level"] = 1.0
+                attrs["traffic_congestion"] = 1.0
+                attrs["state"] = "blocked"
+                attrs["snn_synapse_closed"] = True
+                graph.nodes[v]["snn_neuron_closed"] = True
+                graph.nodes[v]["traffic_node_congestion"] = 1.0
         return graph

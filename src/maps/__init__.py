@@ -6,6 +6,7 @@ from __future__ import annotations
 # GUI 和测试都应从这里导入稳定接口，避免直接依赖内部 helper。
 from .graph_adapter import (
     edge_geometry_to_latlon,
+    make_bidirectional_roads,
     nearest_node_by_latlon,
     osmnx_multidigraph_to_digraph,
     path_edges,
@@ -31,6 +32,7 @@ __all__ = [
     "edge_geometry_to_latlon",
     "load_hangzhou_graph",
     "load_osm_graph",
+    "make_bidirectional_roads",
     "nearest_node_by_latlon",
     "osmnx_multidigraph_to_digraph",
     "path_edges",

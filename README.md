@@ -106,17 +106,13 @@ OpenStreetMap / OSMnx
 
   当前 Web 页面主实现。负责：
 
-  - Streamlit 侧边栏参数输入。
-  - OSM 地图加载按钮。
-  - bbox / place name 输入。
+  - 固定杭州核心 bbox 的 OSM 地图加载按钮。
   - 起点和终点经纬度输入。
   - 起终点 snap 到最近 OSM 道路节点。
   - 调用 `run_navigation()` 执行 SNN wavefront。
   - Folium 地图绘制。
-  - 普通道路、最终路径、wavefront、交通拥堵、小车 marker 的 overlay。
-  - wavefront timestep slider。
-  - car position slider。
-  - 模拟交通 `Step Dynamic Traffic` 动态推进和重规划。
+  - SNN / Dijkstra / A* 路线、交通拥堵、小车 marker 的 overlay。
+  - 自动行驶、距离触发拥塞和增量 SNN 重规划。
   - 页面底部指标和 JSON 调试信息。
 
   这个文件是用户实际交互最多的地方，也是把地图、SNN、交通和可视化串起来的闭环入口。
@@ -379,53 +375,33 @@ streamlit run app.py
 
 打开页面后的推荐流程：
 
-1. 在侧边栏选择 `Map input`。
-2. 使用 `Place name` 时输入城市/区域名，例如 `Shinjuku, Tokyo, Japan`。
-3. 使用 `Bounding box` 时输入 `North / South / East / West` 四个边界坐标。
-4. 选择 `Network type`，默认 `drive` 会保留真实机动车道路方向。
-5. 点击 `Load OSM Map` 下载或加载缓存地图。
-6. 输入 `Start latitude / Start longitude` 和 `Goal latitude / Goal longitude`。
-7. 系统会把起点和终点 snap 到最近 OSM 道路节点。
-8. 点击 `Run SNN Navigation`。
-9. 查看 wavefront、最终路径、指标和小车位置。
-10. 如果要模拟动态拥堵，打开 `Simulated traffic`，点击 `Step Dynamic Traffic` 推进仿真。
+1. 点击 `加载杭州地图`，加载固定的西湖区 / 拱墅区 / 余杭区 / 上城区附近 bbox。
+2. 页面固定使用机动车道路，并在项目图中补齐反向边；Web 端不再暴露道路网络类型选项。
+3. 输入 `起点纬度 / 起点经度` 和 `终点纬度 / 终点经度`。
+4. 系统会把起点和终点 snap 到最近 OSM 道路节点。
+5. 点击 `运行 SNN 导航`，初始路线默认使用 Brian2Loihi 后端；后端不可用时自动降级。
+6. 点击 `开始` 后车辆自动行驶。车辆每行驶约 5 km，前方路线会随机出现局部拥塞。
+7. 查看地图底图、完整路线、拥塞路段、小车位置和 SNN / Dijkstra / A* 耗时对比。
 
 ## Web 页面坐标说明
 
-### Place Name
+### 固定 Bounding Box
 
-`Place name` 是 OSMnx/Nominatim 使用的地名查询字符串。例如：
-
-```text
-Shinjuku, Tokyo, Japan
-```
-
-使用地名时，OSMnx 会自动查询该区域边界，然后下载该区域内的道路网络。地名越大，下载越慢，图越大，SNN 运行也越慢。
-
-### Bounding Box
-
-`Bounding box` 是一个矩形地图裁剪框，用四个经纬度边界定义：
+Web GUI 使用固定矩形地图裁剪框，不再暴露地名或 bbox 输入。当前范围约为旧杭州固定 bbox 的 1/4：
 
 - `North`：北边界，最大纬度 latitude。
 - `South`：南边界，最小纬度 latitude。
 - `East`：东边界，最大经度 longitude。
 - `West`：西边界，最小经度 longitude。
 
-纬度 latitude 控制南北方向，经度 longitude 控制东西方向。以东京新宿附近为例：
-
 ```text
-North = 35.7040
-South = 35.6810
-East  = 139.7160
-West  = 139.6850
+North = 30.3900
+South = 30.2200
+East  = 120.2350
+West  = 120.0300
 ```
 
-这表示只加载：
-
-```text
-纬度 35.6810 到 35.7040
-经度 139.6850 到 139.7160
-```
+该范围覆盖西湖区、拱墅区、余杭区、上城区附近的演示区域。
 
 注意：
 
@@ -540,48 +516,40 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 - 绿色 marker：snap 后的起点节点。
 - 紫色 marker：snap 后的终点节点。
 - 红色小车 marker：沿最终路径 polyline 的当前位置。
-- 非动态交通模式下，`Car position` slider 用于手动移动小车。
-- 动态交通模式下，小车位置来自 `Vehicle.position_on_edge`，每次 `Step Dynamic Traffic` 后沿当前 edge 前进。
+- 小车位置来自 `Vehicle.position_on_edge`，自动行驶时随当前 edge 前进。
 
-当前版本不是自动播放动画，而是通过按钮推进 timestep；这样更容易观察每一步车辆流、拥塞和重规划结果。
+当前版本通过 `开始 / 暂停 / 结束` 控制自动行驶。页面自动推进 timestep，并在达到距离阈值时触发前方拥塞和重规划。
 
 ## 模拟交通拥堵与动态重规划
 
-本项目不接入真实交通 API。Web GUI 中的 `Simulated traffic` 是一个轻量级“路段级动态拥塞模拟器”，用于验证：
+本项目不接入真实交通 API。Web GUI 使用固定的路段级动态拥塞场景，用于验证：
 
 ```text
-背景车辆运行时生成
-    -> 当前路段车辆数上升
-    -> BPR travel_time / current_speed 更新
-    -> 当前路线 ETA 变差
-    -> 导航车辆只基于当前 edge 状态重规划
+导航车辆累计行驶距离达到阈值
+    -> 前方路线随机局部拥塞
+    -> 对应 synapse / 下游 neuron 关闭
+    -> SNN 从当前节点增量发放脉冲
+    -> Dijkstra / A* 使用当前图快照完整重算
 ```
 
-重要约束：拥塞不是出发前预先写死的。`DynamicRouter` 不能访问未来事件、未来车辆位置或未来拥塞状态；它只能读取当前 graph edge attributes，例如 `travel_time/current_speed/congestion_level`。
+重要约束：拥塞不是出发前预先写死的。`DynamicRouter` 不能访问未来事件、未来车辆位置或未来拥塞状态；它只能读取当前 graph edge attributes，例如 `travel_time/current_speed/congestion_level/state/snn_synapse_closed`。
 
 操作流程：
 
 1. 先加载 OSM 地图。
 2. 输入起点和终点。
-3. 在侧边栏打开 `Simulated traffic`。
-4. 选择 `Traffic mode`，例如 `peak` 或 `incident`。
-5. 点击 `Run SNN Navigation`，系统会启动 `SimulationEngine` 并创建主导航车辆。
-6. 点击 `Step Dynamic Traffic` 推进仿真。
-7. 每个 timestep 会生成背景车辆、触发当前事件、移动车辆、更新 edge 状态并检查是否重规划。
-8. 如果当前观测状态显示新路线 ETA 明显更好，红色路径会变化；旧路线会以橙色虚线显示。
+3. 点击 `运行 SNN 导航`。
+4. 点击 `开始`，系统会启动 `SimulationEngine` 并创建主导航车辆。
+5. 页面自动推进 timestep；车辆每行驶约 5 km 会触发前方局部拥塞。
+6. 如果当前观测状态显示新路线 ETA 明显更好，红色路径会变化；旧路线会以橙色虚线显示。
 
-交通参数含义：
+当前 Web GUI 不再暴露动态交通参数。固定演示场景为：
 
-- `Traffic mode`：背景车辆模式。`normal` 为普通流量，`peak` 为高峰波动，`incident` 会启用运行时事故/施工事件。
-- `Background vehicles/min`：背景车辆生成率。数值越大，路段车辆数和拥塞越容易上升。
-- `Traffic timestep seconds`：每次仿真步长 `dt`。
-- `Traffic steps per click`：每次点击 `Step Dynamic Traffic` 连续推进多少个 timestep。
-- `Incident probability/min`：每分钟触发事故/施工的概率，仅 `incident` 模式下使用。
-- `Reroute check interval s`：主导航车辆多久检查一次是否需要重规划。
-- `Min reroute interval s`：两次重规划之间的最小间隔，避免路线频繁抖动。
-- `Reroute congestion threshold`：前方路段拥塞超过该值时，会进入重规划候选。
-- `Traffic seed`：随机种子。相同 seed 下，车辆生成和事件触发可复现。
-- `Traffic edges to draw`：最多绘制多少条交通状态边，用于控制性能。
+- 无背景车辆噪声。
+- 车辆每行驶约 5 km 触发一次前方局部随机拥塞。
+- 拥塞路段对应的突触标记为关闭，下游节点对应神经元标记为关闭。
+- SNN 重规划复用已构建图/SNN 映射，从当前车辆节点重新发放脉冲。
+- Dijkstra 和 A* 每次使用隔离图快照完整重新计算路线。
 
 每条 edge 维护的动态字段包括：
 
@@ -606,7 +574,8 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
     -> current_speed
     -> congestion_level
     -> cost / delay_ms
-    -> 当前时刻的 SNN wavefront 或 dynamic shortest path
+    -> blocked edge / closed neuron / closed synapse
+    -> 当前时刻的增量 SNN pulse 或 Dijkstra/A* 完整重算
 ```
 
 地图颜色：
@@ -616,6 +585,9 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 - 红色线：`congestion_level` 0.7 ~ 0.9。
 - 深红线：`congestion_level` 0.9 ~ 1.0。
 - 橙色虚线：发生重规划后，上一条剩余路线。
+- 红色粗线：SNN 当前路线。
+- 蓝色虚线：Dijkstra 路线；仅当它与 SNN 路线不同时绘制。
+- 绿色虚线：A* 路线；仅当它与 SNN/Dijkstra 路线不同时绘制。
 
 页面指标：
 
@@ -630,6 +602,8 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 - `SNN`：项目当前的 spike wavefront 路由耗时。
 - `Dijkstra`：独立运行 NetworkX Dijkstra，不读取 SNN spike 或 parent trace。
 - `A*`：独立运行 NetworkX A*；OSM 图使用基于直线距离的保守启发式，普通 toy graph 退回零启发式以保持最优性。
+- 动态拥塞后的 SNN 行表示增量 pulse 耗时；Dijkstra/A* 行表示隔离图快照上的完整重算耗时。
+- `累计耗时` 统计动态拥塞后的重规划耗时，不把初始 Brian2Loihi 建网成本混入。
 
 日志和 JSON 调试区会显示：
 
@@ -648,51 +622,27 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 
 ## Web 性能与卡顿处理
 
-Streamlit 的交互模型是：每次拖动 slider 都会重新运行页面脚本。Folium 地图也是重新生成一个 HTML/Leaflet 地图。因此，当道路边很多、激活点很多时，拖动 `Car position` 或 `Wavefront timestep (ms)` 会卡顿。
+Streamlit 的交互模型是：每次控件变化都会重新运行页面脚本。Folium 地图也是重新生成一个 HTML/Leaflet 地图。因此，当道路边很多、激活点很多时，浏览器端会卡顿。
 
 本项目已做的优化：
 
 - 地图道路几何在加载 OSM 图后预计算，并保存在 `st.session_state` 中。
 - Folium 使用 `prefer_canvas=True`，大量线段会尽量走 canvas 渲染。
 - `st_folium(..., returned_objects=[])`，减少前端返回对象带来的开销。
-- 侧边栏提供 `Draw base roads`，可以临时关闭普通道路底图，只显示路径、wavefront 和 marker。
-- 侧边栏提供 `Road edges to draw`，限制普通道路绘制数量。
-- 侧边栏提供 `Wavefront nodes to draw`，限制激活 neuron 点数量。
-- 侧边栏提供 `Traffic edges to draw`，限制拥堵边绘制数量。
+- Web 端不再额外绘制基础道路网络，只使用地图底图、完整路线、拥塞路段和 marker。
+- Web 端不再绘制 wavefront 节点和传播边。
+- 地图缩放、拖动、滚轮缩放、双击缩放等交互已关闭，减少瓦片请求和前端重绘。
+- 交通拥塞路段最多绘制 80 条。
 
-推荐设置：
+## 双向道路与不可达问题
 
-```text
-Road edges to draw      = 800 到 1500
-Wavefront nodes to draw = 300 到 800
-Draw base roads         = 关闭后拖动小车最快
-Bounding box            = 尽量只覆盖需要的区域
-```
+Web GUI 固定使用机动车道路，并在项目 `DiGraph` 中为每条道路补齐反向边。因此当前演示不保留 OSM 单行道限制。
 
-如果只是观察小车沿路径移动，可以关闭 `Draw base roads`。如果只是观察 SNN 扩散，可以降低 `Road edges to draw`，保留 wavefront 点和边。
+如果仍然不可达，通常是因为：
 
-## 有向道路与不可达问题
-
-默认 `network_type="drive"` 会保留真实机动车道路方向，包含单行道限制。因此可能出现：
-
-```text
-No directed route exists from start to goal,
-but the reverse direction is reachable.
-```
-
-这表示：
-
-- 从当前起点到终点没有有向路径。
-- 但从终点到起点存在路径。
-- 常见原因是起终点 snap 到了单行道方向相反的位置。
-
-这种情况下目标 neuron 不会发放 spike，是正确行为。可以尝试：
-
-- 交换起点和终点。
-- 把起点或终点坐标移动到附近路口。
-- 改用 `network_type=all` 后重新加载地图。
-- 扩大 bbox。
-- 避免把起终点放在高架、匝道、封闭小路或单行道路段的错误方向。
+- 起点和终点位于不同连通分量。
+- 拥塞事件关闭了关键神经元/突触。
+- 坐标 snap 到了封闭小路、高架匝道或边界附近孤立道路。
 
 ## OSM 地图缓存
 
@@ -793,12 +743,12 @@ python -m compileall -q app.py app_demo.py src tests
 ## 验收标准
 
 1. `streamlit run app.py` 能启动 Web GUI。
-2. 输入 `Shinjuku, Tokyo, Japan` 或 bbox 后能加载真实道路网络。
+2. 点击 `加载杭州地图` 后能加载固定杭州核心 bbox 的真实机动车道路网络。
 3. 起点/终点经纬度能 snap 到最近道路节点。
-4. 点击 `Run SNN Navigation` 后调用 SNN planner。
-5. GUI 显示真实地图、道路网络、起点、终点、wavefront、最终路径和小车位置。
+4. 点击 `运行 SNN 导航` 后调用 SNN planner。
+5. GUI 显示真实地图、起点、终点、完整路线、拥塞路段和小车位置，不绘制 wavefront 节点。
 6. 全流程不依赖 SUMO。
-7. 打开 `Simulated traffic` 后，背景车辆会随 timestep 持续生成。
-8. 路段颜色会根据当前 `congestion_level` 动态变化。
-9. 导航车辆只基于当前 `travel_time/current_speed/congestion_level` 判断是否重规划。
-10. 若发生重规划，JSON 日志会显示旧 ETA、新 ETA、重规划时间和受影响 edge。
+7. 自动行驶后，车辆每行驶约 5 km 会触发前方局部拥塞。
+8. 拥塞会关闭对应突触和下游神经元，并在地图上高亮拥塞路段。
+9. SNN 重规划复用已构建图/SNN 映射，从当前车辆节点增量发放脉冲。
+10. Dijkstra 和 A* 每次使用隔离图快照完整重算；若路线与 SNN 不同，会用不同颜色绘制。

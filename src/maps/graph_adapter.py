@@ -141,6 +141,32 @@ def osmnx_multidigraph_to_digraph(graph: nx.MultiDiGraph) -> nx.DiGraph:
     return output
 
 
+def make_bidirectional_roads(graph: nx.DiGraph) -> nx.DiGraph:
+    """Return a copy where every directed road edge also has a reverse edge."""
+    output = graph.copy()
+    next_synapse_index = max(
+        (int(attrs.get("snn_synapse_index", -1)) for _u, _v, attrs in output.edges(data=True)),
+        default=-1,
+    ) + 1
+    for u, v, attrs in list(output.edges(data=True)):
+        attrs["oneway"] = False
+        if output.has_edge(v, u):
+            output[v][u]["oneway"] = False
+            continue
+        reverse_attrs = dict(attrs)
+        reverse_attrs["u"] = int(v)
+        reverse_attrs["v"] = int(u)
+        reverse_attrs["original_osm_u"] = attrs.get("original_osm_v", attrs.get("original_osm_u"))
+        reverse_attrs["original_osm_v"] = attrs.get("original_osm_u", attrs.get("original_osm_v"))
+        reverse_attrs["oneway"] = False
+        reverse_attrs["synthetic_reverse_edge"] = True
+        reverse_attrs["snn_synapse_index"] = next_synapse_index
+        next_synapse_index += 1
+        output.add_edge(int(v), int(u), **reverse_attrs)
+    output.graph["bidirectional_roads"] = True
+    return output
+
+
 def path_edges(path_nodes: Iterable[int]) -> list[tuple[int, int]]:
     # 将 [n0, n1, n2] 形式的路径节点转换为 [(n0,n1), (n1,n2)] 边序列。
     nodes = [int(node) for node in path_nodes]
@@ -169,8 +195,11 @@ def edge_geometry_to_latlon(graph: nx.DiGraph, u: int, v: int) -> list[tuple[flo
     """Return edge geometry as Folium-ready `(lat, lon)` points."""
     if not graph.has_edge(u, v):
         return []
-    coords = _geometry_coords(graph[u][v].get("geometry"))
+    attrs = graph[u][v]
+    coords = _geometry_coords(attrs.get("geometry"))
     if coords:
+        if attrs.get("synthetic_reverse_edge"):
+            coords = list(reversed(coords))
         # shapely/OSM 几何通常是 (lon, lat)，Folium 需要 (lat, lon)。
         return [(lat, lon) for lon, lat in coords]
     # 没有道路几何时，用边两端节点坐标退化为直线段。

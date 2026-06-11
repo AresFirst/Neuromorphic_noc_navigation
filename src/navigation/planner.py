@@ -147,6 +147,7 @@ def run_navigation(
             "backend": wavefront.get("backend"),
             "loihi_error": loihi_error,
             "snn_runtime_sec": float(elapsed),
+            "snn_runtime_scope": "SNN wavefront + parent trace，不含地图加载、网页绘制和传统算法对比",
             "target_arrival_time_ms": wavefront.get("target_arrival_time_ms"),
             "num_spikes": int(wavefront.get("num_spikes", 0) or 0),
             "active_neurons": int(wavefront.get("active_neurons", 0) or 0),

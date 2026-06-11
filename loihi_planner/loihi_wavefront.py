@@ -50,7 +50,14 @@ def _build_sim_time_ms(G: nx.DiGraph, reference_arrival: float | None, delay_att
         安全仿真时长 (ms)，至少为 5ms。
     """
     # 收集所有非阻塞边的延迟
-    delays = [int(attrs.get(delay_attr, 1)) for _, _, attrs in G.edges(data=True) if attrs.get("state") != "blocked"]
+    delays = [
+        int(attrs.get(delay_attr, 1))
+        for u, v, attrs in G.edges(data=True)
+        if attrs.get("state") != "blocked"
+        and not attrs.get("snn_synapse_closed")
+        and not G.nodes[u].get("snn_neuron_closed", False)
+        and not G.nodes[v].get("snn_neuron_closed", False)
+    ]
     max_delay = max(delays) if delays else 1
     # 参考到达时间 + 最大单跳延迟 + 5ms 余量
     path_bound = int((reference_arrival or 0.0) + max_delay + 5)
@@ -211,7 +218,9 @@ def run_loihi_wavefront(
             # adjusted_delay = delay - 1: 补偿 1ms 的轴突延迟
             delay_groups: dict[int, list[tuple[int, int]]] = {}
             for source, target_node, attrs in G.edges(data=True):
-                if attrs.get("state") == "blocked":
+                if G.nodes[source].get("snn_neuron_closed", False) or G.nodes[target_node].get("snn_neuron_closed", False):
+                    continue
+                if attrs.get("state") == "blocked" or attrs.get("snn_synapse_closed"):
                     continue          # 跳过阻塞边
                 if source == target_node:
                     continue          # 跳过自环
@@ -305,7 +314,9 @@ def run_loihi_wavefront(
         targets: list[int] = []
         delays: list[int] = []
         for source, target_node, attrs in G.edges(data=True):
-            if attrs.get("state") == "blocked":
+            if G.nodes[source].get("snn_neuron_closed", False) or G.nodes[target_node].get("snn_neuron_closed", False):
+                continue
+            if attrs.get("state") == "blocked" or attrs.get("snn_synapse_closed"):
                 continue
             if source == target_node:
                 continue

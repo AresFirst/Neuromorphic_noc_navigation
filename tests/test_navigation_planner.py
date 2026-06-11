@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from navigation import NavigationResult, run_algorithm_benchmarks, run_navigation
+from navigation import NavigationResult, run_algorithm_benchmarks, run_incremental_snn_navigation, run_navigation
 
 
 def _toy_graph() -> nx.DiGraph:
@@ -43,6 +43,21 @@ def test_toy_graph_runs_navigation_planner_with_cpu_compatible_wavefront():
     assert benchmarks["astar"]["total_cost"] == 3.0
 
 
+def test_snn_parent_trace_tie_breaks_by_real_route_cost():
+    graph = nx.DiGraph()
+    for node in range(4):
+        graph.add_node(node, lat=0.0, lon=float(node), x=float(node), y=0.0, snn_neuron_index=node)
+    graph.add_edge(0, 1, cost=1.0, length=1.0, travel_time=1.0, delay_ms=1, state="normal")
+    graph.add_edge(1, 3, cost=10.0, length=10.0, travel_time=10.0, delay_ms=1, state="normal")
+    graph.add_edge(0, 2, cost=1.0, length=1.0, travel_time=1.0, delay_ms=1, state="normal")
+    graph.add_edge(2, 3, cost=1.0, length=1.0, travel_time=1.0, delay_ms=1, state="normal")
+
+    result = run_navigation(graph, 0, 3, use_loihi=False)
+
+    assert result.path_nodes == [0, 2, 3]
+    assert result.total_cost == 2.0
+
+
 def test_classical_benchmarks_skip_blocked_edges_without_snn_state():
     # Dijkstra/A* 只读取当前图和权重属性；不会复用 SNN spike 或 parent trace。
     graph = _toy_graph()
@@ -71,6 +86,27 @@ def test_astar_benchmark_uses_osm_heuristic_without_losing_optimal_route():
     assert benchmarks["astar"]["success"] is True
     assert benchmarks["astar"]["path_nodes"] == [0, 1, 2]
     assert benchmarks["astar"]["total_cost"] == 2.0
+
+
+def test_incremental_snn_avoids_closed_neurons_and_still_benchmarks_full_recompute():
+    graph = nx.DiGraph()
+    for node in range(4):
+        graph.add_node(node, lat=0.0, lon=float(node), x=float(node), y=0.0, snn_neuron_index=node)
+    graph.add_edge(0, 1, cost=1.0, length=1.0, travel_time=1.0, delay_ms=1, state="blocked", snn_synapse_closed=True)
+    graph.add_edge(1, 3, cost=1.0, length=1.0, travel_time=1.0, delay_ms=1, state="normal")
+    graph.add_edge(0, 2, cost=3.0, length=3.0, travel_time=3.0, delay_ms=3, state="normal")
+    graph.add_edge(2, 3, cost=3.0, length=3.0, travel_time=3.0, delay_ms=3, state="normal")
+    graph.nodes[1]["snn_neuron_closed"] = True
+
+    result = run_incremental_snn_navigation(graph, 0, 3)
+
+    assert result.path_nodes == [0, 2, 3]
+    assert result.metadata["backend"] == "incremental_snn_cached_graph"
+    assert result.metadata["snn_setup_reused"] is True
+    assert result.metadata["closed_neuron_count"] == 1
+    assert result.metadata["closed_synapse_count"] == 1
+    assert result.metadata["algorithm_benchmarks"]["dijkstra"]["path_nodes"] == [0, 2, 3]
+    assert result.metadata["algorithm_benchmarks"]["astar"]["path_nodes"] == [0, 2, 3]
 
 
 def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):

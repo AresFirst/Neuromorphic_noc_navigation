@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,11 @@ class SimulationEngineConfig:
     updater: TrafficStateUpdaterConfig | None = None
     vehicle_simulator: VehicleSimulatorConfig | None = None
     router: DynamicRouterConfig | None = None
+    route_congestion_interval_m: float = 5_000.0
+    route_congestion_edge_count: int = 2
+    route_congestion_duration_seconds: float = 600.0
+    route_congestion_capacity_multiplier: float = 0.01
+    route_congestion_speed_multiplier: float = 0.01
 
 
 @dataclass(slots=True)
@@ -62,6 +68,11 @@ class SimulationEngine:
         self.navigation_result: NavigationResult | None = None
         self.previous_navigation_route: list[int] = []
         self.last_reroute_decision: RerouteDecision | None = None
+        self.rng = random.Random(self.config.random_seed)
+        self.next_route_congestion_distance = float(self.config.route_congestion_interval_m)
+        self.route_congestion_counter = 0
+        self.routing_runtime_totals = {"snn": 0.0, "dijkstra": 0.0, "astar": 0.0}
+        self.routing_event_count = 0
 
     @property
     def vehicles(self) -> list[Vehicle]:
@@ -95,6 +106,69 @@ class SimulationEngine:
             },
         )
 
+    def _record_routing_runtime(self, result: NavigationResult | None) -> None:
+        if result is None:
+            return
+        self.routing_event_count += 1
+        self.routing_runtime_totals["snn"] += float(result.metadata.get("snn_runtime_sec", 0.0) or 0.0)
+        benchmarks = result.metadata.get("algorithm_benchmarks") or {}
+        if isinstance(benchmarks, dict):
+            for key in ("dijkstra", "astar"):
+                payload = benchmarks.get(key) or {}
+                if isinstance(payload, dict):
+                    self.routing_runtime_totals[key] += float(payload.get("runtime_sec", 0.0) or 0.0)
+        result.metadata["routing_runtime_totals"] = {
+            key: float(value) for key, value in self.routing_runtime_totals.items()
+        }
+        result.metadata["routing_event_count"] = int(self.routing_event_count)
+
+    def _candidate_route_congestion_edges(self) -> list[tuple[int, int]]:
+        vehicle = self.navigation_vehicle
+        if vehicle is None or vehicle.arrived or len(vehicle.route) < 2:
+            return []
+        # Avoid closing the edge the vehicle is currently traversing; close one
+        # or two upcoming synapses so the next pulse starts from the current node.
+        start_idx = min(vehicle.current_edge_index + 1, max(0, len(vehicle.route) - 2))
+        candidates: list[tuple[int, int]] = []
+        for idx in range(start_idx, len(vehicle.route) - 1):
+            edge = (int(vehicle.route[idx]), int(vehicle.route[idx + 1]))
+            if edge[1] == vehicle.destination:
+                continue
+            if self.graph.has_edge(*edge):
+                candidates.append(edge)
+        if not candidates and vehicle.current_edge is not None:
+            edge = vehicle.current_edge
+            if self.graph.has_edge(*edge):
+                candidates.append((int(edge[0]), int(edge[1])))
+        self.rng.shuffle(candidates)
+        return candidates[: max(1, int(self.config.route_congestion_edge_count))]
+
+    def _maybe_trigger_route_congestion(self, current_time: float) -> list[TrafficIncident]:
+        vehicle = self.navigation_vehicle
+        if vehicle is None or vehicle.arrived:
+            return []
+        interval = max(1.0, float(self.config.route_congestion_interval_m))
+        triggered: list[TrafficIncident] = []
+        while float(vehicle.total_distance) >= float(self.next_route_congestion_distance):
+            affected_edges = self._candidate_route_congestion_edges()
+            self.next_route_congestion_distance += interval
+            if not affected_edges:
+                continue
+            self.route_congestion_counter += 1
+            incident = TrafficIncident(
+                event_id=f"route-congestion-{self.route_congestion_counter}",
+                event_type="route_congestion",
+                affected_edges=affected_edges,
+                start_time=float(current_time),
+                end_time=float(current_time + float(self.config.route_congestion_duration_seconds)),
+                capacity_multiplier=float(self.config.route_congestion_capacity_multiplier),
+                speed_multiplier=float(self.config.route_congestion_speed_multiplier),
+                is_active=True,
+            )
+            self.incident_generator.incidents.append(incident)
+            triggered.append(incident)
+        return triggered
+
     def start_navigation(
         self,
         origin: int,
@@ -118,6 +192,10 @@ class SimulationEngine:
         )
         self.previous_navigation_route = []
         self.last_reroute_decision = None
+        self.next_route_congestion_distance = float(self.config.route_congestion_interval_m)
+        self.route_congestion_counter = 0
+        self.routing_runtime_totals = {"snn": 0.0, "dijkstra": 0.0, "astar": 0.0}
+        self.routing_event_count = 0
         self.navigation_result = plan.raw_result if isinstance(plan.raw_result, NavigationResult) else self._result_from_route(
             plan.route,
             backend=plan.backend,
@@ -172,6 +250,7 @@ class SimulationEngine:
                 edge = self.navigation_vehicle.current_edge
                 route = [int(edge[0]), *route[1:]]
             self.navigation_result = self._result_from_route(route, backend="dynamic_shortest_path")
+        self._record_routing_runtime(self.navigation_result)
 
     def step(self, *, dt: float | None = None, route_planner: RoutePlanner | None = None) -> SimulationStepResult:
         """Advance one timestep using the required update order."""
@@ -190,6 +269,8 @@ class SimulationEngine:
         self._split_vehicles(moved)
 
         next_time = self.current_time + step_dt
+        self._maybe_trigger_route_congestion(next_time)
+        active_incidents = self.incident_generator.active_incidents(next_time)
         self.state_updater.update(
             self.graph,
             self.vehicles,
@@ -245,12 +326,16 @@ class SimulationEngine:
                 vehicle_count=vehicle_count,
                 congestion=congestion,
                 delay_factor=max(1.0, travel_time / max(0.1, free_flow_time)),
-                blocked=False,
+                blocked=bool(attrs.get("state") == "blocked" or attrs.get("snn_synapse_closed")),
             )
         return TrafficSnapshot(
             step=int(round(self.current_time)),
             edge_states=edge_states,
-            inhibited_nodes={},
+            inhibited_nodes={
+                int(node): float(attrs.get("traffic_node_congestion", 0.0) or 0.0)
+                for node, attrs in self.graph.nodes(data=True)
+                if attrs.get("snn_neuron_closed")
+            },
             metadata={
                 "current_time": float(self.current_time),
                 "vehicle_count": len(self.vehicles),
