@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from navigation import NavigationResult, run_navigation
+from navigation import NavigationResult, run_algorithm_benchmarks, run_navigation
 
 
 def _toy_graph() -> nx.DiGraph:
@@ -34,6 +34,43 @@ def test_toy_graph_runs_navigation_planner_with_cpu_compatible_wavefront():
     assert result.wavefront_frames
     assert result.metadata["spike_times_by_node"] == {0: 0.0, 1: 1.0, 2: 3.0}
     assert result.metadata["wavefront_time_max_ms"] == 3
+    benchmarks = result.metadata["algorithm_benchmarks"]
+    assert benchmarks["dijkstra"]["success"] is True
+    assert benchmarks["dijkstra"]["path_nodes"] == [0, 1, 2]
+    assert benchmarks["dijkstra"]["total_cost"] == 3.0
+    assert benchmarks["astar"]["success"] is True
+    assert benchmarks["astar"]["path_nodes"] == [0, 1, 2]
+    assert benchmarks["astar"]["total_cost"] == 3.0
+
+
+def test_classical_benchmarks_skip_blocked_edges_without_snn_state():
+    # Dijkstra/A* 只读取当前图和权重属性；不会复用 SNN spike 或 parent trace。
+    graph = _toy_graph()
+    graph[0][1]["state"] = "blocked"
+
+    benchmarks = run_algorithm_benchmarks(graph, 0, 2, cost_attr="cost")
+
+    assert benchmarks["dijkstra"]["path_nodes"] == [0, 2]
+    assert benchmarks["dijkstra"]["total_cost"] == 10.0
+    assert benchmarks["astar"]["path_nodes"] == [0, 2]
+    assert benchmarks["astar"]["total_cost"] == 10.0
+
+
+def test_astar_benchmark_uses_osm_heuristic_without_losing_optimal_route():
+    graph = nx.DiGraph()
+    graph.graph["source"] = "osmnx"
+    graph.add_node(0, lat=30.0, lon=120.0)
+    graph.add_node(1, lat=30.001, lon=120.001)
+    graph.add_node(2, lat=30.002, lon=120.002)
+    graph.add_edge(0, 1, cost=1.0, travel_time=1.0, length=160.0, state="normal")
+    graph.add_edge(1, 2, cost=1.0, travel_time=1.0, length=160.0, state="normal")
+    graph.add_edge(0, 2, cost=5.0, travel_time=5.0, length=320.0, state="normal")
+
+    benchmarks = run_algorithm_benchmarks(graph, 0, 2, cost_attr="cost")
+
+    assert benchmarks["astar"]["success"] is True
+    assert benchmarks["astar"]["path_nodes"] == [0, 1, 2]
+    assert benchmarks["astar"]["total_cost"] == 2.0
 
 
 def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Sequence
 
 import networkx as nx
 
@@ -12,6 +12,7 @@ from loihi_planner.path_compare import compute_path_cost
 from loihi_planner.path_reconstruction import reconstruct_path_from_parent
 from snn import run_wavefront
 
+from .benchmarks import run_algorithm_benchmarks
 from .result import NavigationResult, WavefrontFrame
 
 
@@ -63,6 +64,7 @@ def run_navigation(
     cost_attr: str = "cost",
     use_loihi: bool = True,
     loihi_config: dict[str, Any] | None = None,
+    benchmark_algorithms: Sequence[str] | None = ("dijkstra", "astar"),
 ) -> NavigationResult:
     """Run the SNN pipeline and return a standard navigation result."""
     config = loihi_config or {}
@@ -94,8 +96,6 @@ def run_navigation(
             refractory_ms=int(config.get("refractory_ms", 1000)),
             seed=int(config.get("seed", 0)),
         )
-    elapsed = time.perf_counter() - started
-
     # 统一把后端返回的 key 转成 int，避免 GraphML 字符串节点和 JSON 显示造成混乱。
     spike_times = {
         int(node): float(time_ms)
@@ -120,7 +120,19 @@ def run_navigation(
             error = str(exc)
             path_nodes = []
 
+    elapsed = time.perf_counter() - started
     path_edges = [(int(u), int(v)) for u, v in zip(path_nodes, path_nodes[1:])]
+    algorithm_benchmarks = (
+        run_algorithm_benchmarks(
+            graph,
+            int(start_node),
+            int(goal_node),
+            cost_attr=cost_attr,
+            algorithms=benchmark_algorithms,
+        )
+        if benchmark_algorithms
+        else {}
+    )
     # 返回统一结果对象，GUI、测试和后续 API 都只依赖这个结构。
     return NavigationResult(
         start_node=int(start_node),
@@ -144,5 +156,7 @@ def run_navigation(
             "path_length_m": _path_attr_sum(graph, path_nodes, "length"),
             "path_travel_time_s": _path_attr_sum(graph, path_nodes, "travel_time"),
             "path_cost_attr": cost_attr,
+            "algorithm_benchmarks": algorithm_benchmarks,
+            "benchmark_cost_attr": cost_attr,
         },
     )

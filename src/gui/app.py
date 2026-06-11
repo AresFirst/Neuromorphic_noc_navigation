@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 
 import networkx as nx
@@ -553,6 +554,48 @@ def _metric_float(result: NavigationResult | None, key: str) -> float:
         return 0.0
 
 
+def _optional_float(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
+
+
+def _algorithm_comparison_rows(result: NavigationResult | None) -> list[dict[str, object]]:
+    if result is None:
+        return []
+    rows: list[dict[str, object]] = [
+        {
+            "算法": "SNN",
+            "运行耗时（秒）": round(_metric_float(result, "snn_runtime_sec"), 6),
+            "状态": _navigation_status_label(result),
+            "路径节点数": len(result.path_nodes),
+            "总成本": _optional_float(result.total_cost),
+            "预计通行时间（秒）": _optional_float(result.metadata.get("path_travel_time_s")),
+        }
+    ]
+    benchmarks = result.metadata.get("algorithm_benchmarks") or {}
+    if not isinstance(benchmarks, dict):
+        return rows
+    for benchmark in benchmarks.values():
+        if not isinstance(benchmark, dict):
+            continue
+        rows.append(
+            {
+                "算法": str(benchmark.get("label") or benchmark.get("algorithm") or ""),
+                "运行耗时（秒）": round(float(benchmark.get("runtime_sec", 0.0) or 0.0), 6),
+                "状态": "成功" if bool(benchmark.get("success")) else "失败",
+                "路径节点数": int(benchmark.get("path_node_count", len(benchmark.get("path_nodes", []))) or 0),
+                "总成本": _optional_float(benchmark.get("total_cost")),
+                "预计通行时间（秒）": _optional_float(benchmark.get("path_travel_time_s")),
+            }
+        )
+    return rows
+
+
 def _reachability_status(graph: nx.DiGraph, start_node: int, goal_node: int) -> tuple[bool, str]:
     # 可达性检查使用当前 planning graph。
     # traffic 开启后，blocked 边已经从 wavefront 角度不可通行，因此这里也会反映交通影响。
@@ -999,6 +1042,11 @@ def main() -> None:
         "SNN 运行耗时",
         f"{_metric_float(result, 'snn_runtime_sec'):.3f} s",
     )
+    comparison_rows = _algorithm_comparison_rows(result)
+    if comparison_rows:
+        st.subheader("算法运行耗时对比")
+        st.table(comparison_rows)
+
     if traffic_engine is not None:
         # 动态交通指标区：全部来自当前 SimulationEngine 状态，不含未来信息。
         metrics = traffic_engine.metrics.metrics
@@ -1026,6 +1074,7 @@ def main() -> None:
                 "目标发放时间（毫秒）": result.metadata.get("target_arrival_time_ms") if result else None,
                 "错误": result.metadata.get("error") if result else None,
                 "Loihi 错误": result.metadata.get("loihi_error") if result else None,
+                "算法基准": result.metadata.get("algorithm_benchmarks") if result else {},
                 "存在有向路径": path_exists,
                 "启用模拟交通": bool(traffic_enabled),
                 "交通步数": int(st.session_state.get("traffic_step", 0)),

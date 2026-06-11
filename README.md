@@ -625,6 +625,12 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 - `Congested edges`：当前拥塞路段数量。
 - `Reroutes`：主导航车辆重规划次数。
 
+导航结果下方会显示算法运行耗时对比表：
+
+- `SNN`：项目当前的 spike wavefront 路由耗时。
+- `Dijkstra`：独立运行 NetworkX Dijkstra，不读取 SNN spike 或 parent trace。
+- `A*`：独立运行 NetworkX A*；OSM 图使用基于直线距离的保守启发式，普通 toy graph 退回零启发式以保持最优性。
+
 日志和 JSON 调试区会显示：
 
 - `navigation_vehicle_travel_time`
@@ -731,6 +737,8 @@ NavigationResult(
 - `wavefront_steps`：GUI 中可视化的 wavefront frame 数。
 - `wavefront_time_max_ms`：GUI 中 `Wavefront timestep (ms)` 的最大时间。
 - `spike_times_by_node`：每个 node/neuron 的首次发放时间，用于按 timestep 重建 wavefront 状态。
+- `algorithm_benchmarks`：Dijkstra、A* 等传统路径算法的独立运行耗时和路径摘要。
+- `benchmark_cost_attr`：传统路径算法对比时使用的边权重属性，默认是 `cost`。
 
 若 Brian2Loihi 后端不可用，导航层会自动降级到 CPU-compatible wavefront，以保证 Web 闭环仍然可以运行。
 

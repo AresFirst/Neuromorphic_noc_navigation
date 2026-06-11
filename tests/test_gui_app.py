@@ -10,6 +10,7 @@ import gui.app as gui_app
 from maps import HANGZHOU_BBOX
 from gui.app import (
     FOLIUM_TILE_NAME,
+    _algorithm_comparison_rows,
     _coordinate_in_bbox,
     _ensure_playback_state,
     _finish_playback_state,
@@ -122,6 +123,7 @@ def test_gui_main_contains_required_chinese_labels():
         "平均速度",
         "拥堵路段",
         "重规划次数",
+        "算法运行耗时对比",
         "调试信息 / 元数据 / 日志",
     ]:
         assert label in source
@@ -152,3 +154,43 @@ def test_wavefront_frame_at_arbitrary_timestep():
     assert frame.active_edges == [(0, 1)]
     assert _wavefront_inflight_edges_at_time(graph, result, 3) == [(1, 2)]
     assert _wavefront_time_limit(result) == 4
+
+
+def test_algorithm_comparison_rows_include_independent_benchmarks():
+    result = NavigationResult(
+        start_node=0,
+        goal_node=2,
+        path_nodes=[0, 1, 2],
+        path_edges=[(0, 1), (1, 2)],
+        total_cost=3.0,
+        metadata={
+            "success": True,
+            "snn_runtime_sec": 0.12,
+            "path_travel_time_s": 3.0,
+            "algorithm_benchmarks": {
+                "dijkstra": {
+                    "label": "Dijkstra",
+                    "success": True,
+                    "runtime_sec": 0.01,
+                    "path_node_count": 3,
+                    "total_cost": 3.0,
+                    "path_travel_time_s": 3.0,
+                },
+                "astar": {
+                    "label": "A*",
+                    "success": True,
+                    "runtime_sec": 0.008,
+                    "path_node_count": 3,
+                    "total_cost": 3.0,
+                    "path_travel_time_s": 3.0,
+                },
+            },
+        },
+    )
+
+    rows = _algorithm_comparison_rows(result)
+
+    assert [row["算法"] for row in rows] == ["SNN", "Dijkstra", "A*"]
+    assert rows[0]["运行耗时（秒）"] == 0.12
+    assert rows[1]["运行耗时（秒）"] == 0.01
+    assert rows[2]["运行耗时（秒）"] == 0.008
