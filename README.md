@@ -2,7 +2,7 @@
 
 这是一个“真实道路地图 + SNN 路径规划 + Web GUI 可视化”的精简项目。
 
-当前主线不再使用 SUMO，也不再依赖 MoST 数据集。地图来自 OpenStreetMap，使用 OSMnx 下载和缓存；计算层临时转换成 `networkx.DiGraph`；规划层使用 Brian2Loihi wavefront 或 CPU-compatible wavefront；最终结果在 Streamlit + Folium Web 页面中显示。
+当前主线不再使用 SUMO，也不再依赖 MoST 数据集。地图来自 OpenStreetMap，使用 OSMnx 下载和缓存；计算层临时转换成 `networkx.DiGraph`；规划层使用 Brian2Loihi wavefront 或 CPU-compatible wavefront；最终结果在 Streamlit Web 页面中显示。GUI 默认保留 OpenStreetMap 标准底图样式；如果准备本地 MapLibre 矢量瓦片或本地 OSM 栅格瓦片，也可以离线渲染。
 
 ## 数据流
 
@@ -20,8 +20,8 @@ OpenStreetMap / OSMnx
     -> SNN wavefront spike propagation
     -> parent trace / STDP-like 路径回溯
     -> NavigationResult
-    -> Streamlit + Folium GUI
-       - 真实底图
+    -> Streamlit + OpenStreetMap/MapLibre/Canvas GUI
+       - 本地矢量瓦片或本地道路几何
        - 道路网络
        - 起点/终点
        - wavefront 激活节点和边
@@ -29,20 +29,23 @@ OpenStreetMap / OSMnx
        - 小车位置
 ```
 
-`networkx.DiGraph` 只作为计算层使用，不作为最终地图显示格式。GUI 中的道路显示始终基于 OSM 道路几何。
+`networkx.DiGraph` 只作为计算层使用，不作为最终地图显示格式。GUI 中的道路显示始终基于 OSM 道路几何；默认底图使用 OpenStreetMap 标准栅格样式，如果提供本地 `hangzhou.mbtiles` 或 `hangzhou.pmtiles`，底图也可以由 MapLibre 使用本地矢量瓦片渲染。
 
 ## 项目结构
 
 ```text
 .
 ├── app.py                         # Streamlit 入口
+├── desktop_app.py                 # PySide6 桌面入口
 ├── app_demo.py                    # 独立 demo，便于快速试验
 ├── configs/
 │   └── brian2loihi.yaml           # SNN 参数
 ├── loihi_planner/                 # Brian2Loihi wavefront 与路径回溯
 ├── src/
 │   ├── gui/
-│   │   └── app.py                 # Web GUI 主实现
+│   │   ├── app.py                 # Web GUI 主实现
+│   │   ├── desktop_viewer.py      # PySide6 桌面地图/车辆/路线可视化
+│   │   └── offline_map.py         # OSM/MapLibre/Canvas 地图渲染
 │   ├── maps/
 │   │   ├── graph_adapter.py       # OSMnx MultiDiGraph -> 项目 DiGraph
 │   │   └── osmnx_loader.py        # OSM 下载、缓存、加载
@@ -86,6 +89,16 @@ OpenStreetMap / OSMnx
 
   时，实际会进入 `src/gui/app.py` 中的 `main()`。这个文件只负责把项目根目录和 `src/` 加入 Python import 路径，并转发到正式 GUI。
 
+- `desktop_app.py`
+
+  PySide6 桌面 GUI 的根入口。用户运行：
+
+  ```bash
+  python desktop_app.py
+  ```
+
+  时，实际会进入 `src/gui/desktop_viewer.py` 中的 `main()`。桌面端不依赖浏览器，只显示杭州地图、DiGraph/SNN 节点、SNN 路线和自动行驶车辆。
+
 - `app_demo.py`
 
   独立实验 demo。它不走当前项目的完整模块化 pipeline，而是在一个文件里直接完成 OSMnx 下载、Brian2 wavefront、Folium 绘图和 Streamlit 页面展示。它适合用来快速检查环境是否能跑通，但正式功能以 `app.py` 和 `src/gui/app.py` 为准。
@@ -107,35 +120,57 @@ OpenStreetMap / OSMnx
   当前 Web 页面主实现。负责：
 
   - Streamlit 侧边栏参数输入。
-  - OSM 地图加载按钮。
-  - bbox / place name 输入。
+  - 固定加载浙江省杭州市地图。
   - 起点和终点经纬度输入。
   - 起终点 snap 到最近 OSM 道路节点。
   - 调用 `run_navigation()` 执行 SNN wavefront。
-  - Folium 地图绘制。
-  - 普通道路、最终路径、wavefront、交通拥堵、小车 marker 的 overlay。
+  - 调用离线地图组件绘制普通道路、最终路径、wavefront、交通拥堵、小车 marker。
   - wavefront timestep slider。
-  - car position slider。
-  - 模拟交通 `Step Dynamic Traffic` 动态推进和重规划。
+  - 车辆 `开始 / 暂停 / 结束` 自动行驶控制。
+  - 模拟交通动态推进和当前状态下的重规划。
   - 页面底部指标和 JSON 调试信息。
 
   这个文件是用户实际交互最多的地方，也是把地图、SNN、交通和可视化串起来的闭环入口。
+
+- `src/gui/desktop_viewer.py`
+
+  PySide6 桌面地图窗口。它复用现有杭州 OSM 缓存、`osmnx_multidigraph_to_digraph()`、
+  `run_navigation()` 和 `path_nodes_to_latlon()`，不改 SNN 或交通核心结构。当前桌面端提供：
+
+  - 本地窗口地图，不经过 Streamlit 或浏览器。
+  - 可选本地 `data/tiles/osm/{z}/{x}/{y}.png` OSM 栅格瓦片。
+  - 没有本地瓦片时，直接绘制 OSM 道路 geometry。
+  - DiGraph 节点点层，双击节点显示 DiGraph node、SNN neuron index 和 OSM node id。
+  - 起终点经纬度输入、最近道路节点吸附、SNN 导航。
+  - 红色路线和车辆 `开始 / 暂停 / 结束` 自动播放。
+
+- `src/gui/offline_map.py`
+
+  地图渲染层。它不参与路径计算，只负责把当前 GUI 状态转换为前端 GeoJSON payload，并渲染：
+
+  - OpenStreetMap 标准栅格底图。
+  - 本地 `data/tiles/osm/{z}/{x}/{y}.png` 栅格瓦片。
+  - 可选本地 Leaflet 前端资源。
+  - 本地 MapLibre GL JS。
+  - 本地 `data/tiles/hangzhou.mbtiles` 矢量瓦片。
+  - 或本地 `data/tiles/hangzhou.pmtiles`，需要同时提供 `pmtiles.js`。
+  - 严格离线且缺少本地 OSM/MapLibre 资源时，才使用 Canvas 降级渲染本地 GraphML 道路、路径、车辆、拥堵和 wavefront。
 
 ### 地图层
 
 - `src/maps/osmnx_loader.py`
 
-  负责真实道路地图加载。它支持两种输入：
+  负责真实道路地图加载。GUI 主线固定使用浙江省杭州市，优先读取稳定缓存文件：
 
-  - `place_name`：例如 `Shinjuku, Tokyo, Japan`。
-  - `BoundingBox`：手动指定 `north / south / east / west`。
+  - `data/osm_cache/hangzhou_drive.graphml`
+  - 或其他 network type 对应的 `hangzhou_{network_type}.graphml`
 
   它的主要职责是：
 
   - 调用 OSMnx 从 OpenStreetMap 下载道路网络。
   - 给道路边添加 speed 和 travel time。
   - 下载后保存为 GraphML 缓存。
-  - 下次加载相同区域时优先读取本地缓存。
+  - 下次加载杭州区域时优先读取本地缓存。
   - 在 OSMnx 或地理库不可用时，尝试使用手写 Overpass fallback。
 
   这个模块输出的是 OSMnx 风格的 `networkx.MultiDiGraph`，仍然保留 OSM 原始节点、边和道路属性。
@@ -152,7 +187,7 @@ OpenStreetMap / OSMnx
   - 合并平行边，同一 `(u, v)` 只保留 cost 最小的一条。
   - cost 优先使用 `travel_time`，其次使用 `length`，最后使用 `1.0`。
   - 生成 `delay_ms` 作为 SNN 突触延迟。
-  - 保留道路 `geometry`，用于 Folium 绘制真实道路形状。
+  - 保留道路 `geometry`，用于 GUI 离线渲染真实道路形状。
   - 提供 `path_nodes_to_latlon()`，把 SNN 输出路径转回地图坐标。
   - 提供 `nearest_node_by_latlon()`，把用户输入的经纬度 snap 到最近道路节点。
 
@@ -257,7 +292,7 @@ OpenStreetMap / OSMnx
   - `TrafficEdgeState`
   - `TrafficSnapshot`
 
-  `TrafficSnapshot` 描述当前 traffic step 中哪些边拥堵、哪些边阻塞、哪些节点受到抑制。新的动态仿真引擎会把当前 edge attributes 转成这个结构供 Folium overlay 使用。
+  `TrafficSnapshot` 描述当前 traffic step 中哪些边拥堵、哪些边阻塞、哪些节点受到抑制。新的动态仿真引擎会把当前 edge attributes 转成这个结构供 GUI overlay 使用。
 
 - `src/traffic/simulator.py`
 
@@ -366,7 +401,7 @@ pip install -e .
 
 ```bash
 conda activate neuro-nav
-conda install -c conda-forge osmnx geopandas shapely pyproj folium streamlit streamlit-folium pytest
+conda install -c conda-forge osmnx geopandas shapely pyproj folium streamlit streamlit-folium pyside6 pytest
 pip install -e .
 ```
 
@@ -379,69 +414,102 @@ streamlit run app.py
 
 打开页面后的推荐流程：
 
-1. 在侧边栏选择 `Map input`。
-2. 使用 `Place name` 时输入城市/区域名，例如 `Shinjuku, Tokyo, Japan`。
-3. 使用 `Bounding box` 时输入 `North / South / East / West` 四个边界坐标。
-4. 选择 `Network type`，默认 `drive` 会保留真实机动车道路方向。
-5. 点击 `Load OSM Map` 下载或加载缓存地图。
-6. 输入 `Start latitude / Start longitude` 和 `Goal latitude / Goal longitude`。
-7. 系统会把起点和终点 snap 到最近 OSM 道路节点。
-8. 点击 `Run SNN Navigation`。
-9. 查看 wavefront、最终路径、指标和小车位置。
-10. 如果要模拟动态拥堵，打开 `Simulated traffic`，点击 `Step Dynamic Traffic` 推进仿真。
+1. 选择 `道路网络类型`，默认 `drive` 会保留真实机动车道路方向。
+2. 点击 `加载杭州地图`，系统优先读取 `data/osm_cache/hangzhou_drive.graphml`。
+3. 输入 `起点纬度 / 起点经度` 和 `终点纬度 / 终点经度`，坐标必须位于杭州固定范围内。
+4. 点击 `运行 SNN 导航`。
+5. 查看 wavefront、最终路径、指标和车辆位置。
+6. 点击 `开始` 后车辆会自动沿当前路线行驶；`暂停` 会保留车辆和交通状态；`结束` 会停止本次导航。
+7. 如果要模拟动态拥堵，打开 `启用模拟交通`，暂停时可调整交通参数并点击 `应用当前交通设置`，恢复开始时会基于当前拥堵状态重新评估路线。
+
+## 启动桌面 GUI
+
+```bash
+conda activate neuro-nav
+python desktop_app.py
+```
+
+桌面端适合只观察地图、节点、路线和车辆，不走 Web 页面。推荐流程：
+
+1. 点击 `加载杭州地图`，系统优先读取 `data/osm_cache/hangzhou_drive.graphml`。
+2. 根据需要调整 `起点纬度 / 起点经度` 和 `终点纬度 / 终点经度`。
+3. 点击 `运行 SNN 导航`，红色路线会显示在地图上。
+4. 点击 `开始`，红色车辆点会沿路线自动移动；`暂停` 会保留当前位置；`结束` 会重置本次播放。
+5. 双击地图上的蓝色节点，可查看该点对应的 DiGraph node、SNN neuron index 和原始 OSM node id。
+
+如果存在 `data/tiles/osm/{z}/{x}/{y}.png` 本地瓦片，桌面端会直接读取本地瓦片作为底图；没有本地瓦片时，会绘制 OSM 道路 geometry、节点、路线和车辆。
+
+## OpenStreetMap 样式与离线瓦片
+
+Web GUI 默认使用 OpenStreetMap 标准栅格底图，以保留原版 OSM 的地图样式。这个默认模式需要浏览器能访问在线 OSM 瓦片和 Leaflet 前端资源。
+
+如果要完全断网但仍保留接近原版 OpenStreetMap 的视觉样式，请准备本地栅格瓦片和 Leaflet 资源：
+
+```text
+data/offline_map/assets/leaflet.js
+data/offline_map/assets/leaflet.css
+data/tiles/osm/{z}/{x}/{y}.png
+```
+
+本地栅格瓦片目录使用标准 XYZ 结构。GUI 检测到 `data/tiles/osm` 中存在 `.png`、`.jpg`、`.jpeg` 或 `.webp` 瓦片后，会通过本地 HTTP 服务读取这些瓦片；如果缺少本地 Leaflet 资源，则 Leaflet 仍会从 CDN 加载。
+
+桌面 GUI 不需要 Leaflet；它会用 Qt 直接读取同一个 `data/tiles/osm` 目录。
+
+要启用高性能本地 MapLibre 矢量瓦片，请准备：
+
+```text
+data/offline_map/assets/maplibre-gl.js
+data/offline_map/assets/maplibre-gl.css
+data/tiles/hangzhou.mbtiles
+```
+
+可选 PMTiles 模式：
+
+```text
+data/offline_map/assets/pmtiles.js
+data/tiles/hangzhou.pmtiles
+```
+
+这些大文件默认被 `.gitignore` 忽略。GUI 会自动检测资源：
+
+- 检测到 `hangzhou.mbtiles`：使用本地 MBTiles 矢量瓦片。
+- 检测到 `hangzhou.pmtiles` 且有 `pmtiles.js`：使用本地 PMTiles。
+- 检测到 `data/tiles/osm`：使用本地 OpenStreetMap 栅格瓦片。
+- 没有本地瓦片：默认使用在线 OpenStreetMap 标准底图。
+- 严格离线且没有 OSM/MapLibre 本地资源：使用 Canvas 离线降级渲染。
+
+建议将杭州矢量瓦片限制在项目固定范围附近，避免文件过大：
+
+```text
+北 30.420
+南 30.080
+东 120.360
+西 119.950
+```
 
 ## Web 页面坐标说明
 
-### Place Name
+### 固定杭州范围
 
-`Place name` 是 OSMnx/Nominatim 使用的地名查询字符串。例如：
-
-```text
-Shinjuku, Tokyo, Japan
-```
-
-使用地名时，OSMnx 会自动查询该区域边界，然后下载该区域内的道路网络。地名越大，下载越慢，图越大，SNN 运行也越慢。
-
-### Bounding Box
-
-`Bounding box` 是一个矩形地图裁剪框，用四个经纬度边界定义：
-
-- `North`：北边界，最大纬度 latitude。
-- `South`：南边界，最小纬度 latitude。
-- `East`：东边界，最大经度 longitude。
-- `West`：西边界，最小经度 longitude。
-
-纬度 latitude 控制南北方向，经度 longitude 控制东西方向。以东京新宿附近为例：
+Web GUI 不再暴露 place name 或手动 bbox 输入。地图区域固定为浙江省杭州市，当前代码中的范围为：
 
 ```text
-North = 35.7040
-South = 35.6810
-East  = 139.7160
-West  = 139.6850
+North = 30.420
+South = 30.080
+East  = 120.360
+West  = 119.950
 ```
 
-这表示只加载：
-
-```text
-纬度 35.6810 到 35.7040
-经度 139.6850 到 139.7160
-```
-
-注意：
-
-- `North` 必须大于 `South`。
-- `East` 必须大于 `West`，在日本、中国、美国本土等常见区域通常如此。
-- bbox 越小，加载越快，页面越流畅。
-- bbox 太小可能导致起点/终点落在断开的道路片段中，目标 neuron 不发放。
+起点和终点坐标会先做杭州范围校验，再 snap 到最近道路节点。
 
 ### Start / Goal Coordinates
 
 页面里的：
 
-- `Start latitude`
-- `Start longitude`
-- `Goal latitude`
-- `Goal longitude`
+- `起点纬度`
+- `起点经度`
+- `终点纬度`
+- `终点经度`
 
 不是直接作为 SNN 节点使用。系统会先把这些经纬度 snap 到最近的 OSM 道路节点，然后使用 snap 后的节点 ID 作为：
 
@@ -450,7 +518,7 @@ West  = 139.6850
 - 起点 neuron index
 - 终点 neuron index
 
-因此，如果你输入的坐标在道路旁边，实际起终点会落到最近道路节点。页面下方会显示 snapped 后的 `Start node` 和 `Goal node`。
+因此，如果你输入的坐标在道路旁边，实际起终点会落到最近道路节点。页面下方会显示 snapped 后的 `起点节点` 和 `终点节点`。
 
 ## 地图中点、线、格点的含义
 
@@ -501,15 +569,14 @@ OSM node id
 
 ### Wavefront 激活点
 
-当点击 `Run SNN Navigation` 后，起点 neuron 注入初始 spike。脉冲沿道路边传播，经过突触延迟后激活下一个 neuron。
+当点击 `运行 SNN 导航` 后，起点 neuron 注入初始 spike。脉冲沿道路边传播，经过突触延迟后激活下一个 neuron。
 
 GUI 中：
 
-- 青色 CircleMarker：当前 timestep 之前已经发放过 spike 的 neuron。
-- 橙色 CircleMarker：当前 timestep 新发放的 neuron。
-- 青色 PolyLine：当前 timestep 之前已经传播完成的 edge/synapse。
-- 橙色虚线 PolyLine：当前 timestep 正在传播中的 edge/synapse，即前驱 neuron 已发放，但延迟还没有结束。
-- `Wavefront timestep (ms)`：按毫秒拖动的 wavefront 时间滑块，用于观察神经元逐步激活过程。
+- 青色点：当前 timestep 之前已经发放过 spike 的 neuron。
+- 青色线：当前 timestep 之前已经传播完成的 edge/synapse。
+- 橙色虚线：当前 timestep 正在传播中的 edge/synapse，即前驱 neuron 已发放，但延迟还没有结束。
+- `波前时间步（毫秒）`：按毫秒拖动的 wavefront 时间滑块，用于观察神经元逐步激活过程。
 - `t=... ms`：当前 slider 对应的 SNN/CPU wavefront 时间。
 
 如果 wavefront 只传播到 `t=1 ms`，那么 slider 最大值是 `1`，这是正常的：
@@ -535,19 +602,21 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 
 说明目标 neuron 没有收到 spike。此时 wavefront 可能仍然有若干 frame，因为波前传播到了部分可达节点，但没有传播到目标。
 
-### Start / Goal / Car
+### 起点 / 终点 / 车辆
 
-- 绿色 marker：snap 后的起点节点。
-- 紫色 marker：snap 后的终点节点。
-- 红色小车 marker：沿最终路径 polyline 的当前位置。
-- 非动态交通模式下，`Car position` slider 用于手动移动小车。
-- 动态交通模式下，小车位置来自 `Vehicle.position_on_edge`，每次 `Step Dynamic Traffic` 后沿当前 edge 前进。
+- 绿色点：snap 后的起点节点。
+- 紫色点：snap 后的终点节点。
+- 红色点：主导航车辆位置。
+- 点击 `开始` 后，车辆会沿当前路线自动行驶。
+- 点击 `暂停` 后，车辆位置、当前路线、交通状态和仿真时间都会保留。
+- 暂停后调整交通参数，再点击 `开始`，系统会基于当前 edge 状态重新评估路线。
+- 点击 `结束` 后，当前导航仿真停止。
 
-当前版本不是自动播放动画，而是通过按钮推进 timestep；这样更容易观察每一步车辆流、拥塞和重规划结果。
+车辆位置来自 `Vehicle.position_on_edge` 和当前 edge geometry 插值，不再使用手动 `Car position` slider。
 
 ## 模拟交通拥堵与动态重规划
 
-本项目不接入真实交通 API。Web GUI 中的 `Simulated traffic` 是一个轻量级“路段级动态拥塞模拟器”，用于验证：
+本项目不接入真实交通 API。Web GUI 中的 `启用模拟交通` 是一个轻量级“路段级动态拥塞模拟器”，用于验证：
 
 ```text
 背景车辆运行时生成
@@ -561,27 +630,27 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 
 操作流程：
 
-1. 先加载 OSM 地图。
+1. 先加载杭州地图。
 2. 输入起点和终点。
-3. 在侧边栏打开 `Simulated traffic`。
-4. 选择 `Traffic mode`，例如 `peak` 或 `incident`。
-5. 点击 `Run SNN Navigation`，系统会启动 `SimulationEngine` 并创建主导航车辆。
-6. 点击 `Step Dynamic Traffic` 推进仿真。
+3. 在侧边栏打开 `启用模拟交通`。
+4. 选择 `交通模式`，例如 `高峰` 或 `事故/施工`。
+5. 点击 `运行 SNN 导航`，系统会启动 `SimulationEngine` 并创建主导航车辆。
+6. 点击 `开始`，页面每次刷新会推进一个或多个 timestep。
 7. 每个 timestep 会生成背景车辆、触发当前事件、移动车辆、更新 edge 状态并检查是否重规划。
 8. 如果当前观测状态显示新路线 ETA 明显更好，红色路径会变化；旧路线会以橙色虚线显示。
 
 交通参数含义：
 
-- `Traffic mode`：背景车辆模式。`normal` 为普通流量，`peak` 为高峰波动，`incident` 会启用运行时事故/施工事件。
-- `Background vehicles/min`：背景车辆生成率。数值越大，路段车辆数和拥塞越容易上升。
-- `Traffic timestep seconds`：每次仿真步长 `dt`。
-- `Traffic steps per click`：每次点击 `Step Dynamic Traffic` 连续推进多少个 timestep。
-- `Incident probability/min`：每分钟触发事故/施工的概率，仅 `incident` 模式下使用。
-- `Reroute check interval s`：主导航车辆多久检查一次是否需要重规划。
-- `Min reroute interval s`：两次重规划之间的最小间隔，避免路线频繁抖动。
-- `Reroute congestion threshold`：前方路段拥塞超过该值时，会进入重规划候选。
-- `Traffic seed`：随机种子。相同 seed 下，车辆生成和事件触发可复现。
-- `Traffic edges to draw`：最多绘制多少条交通状态边，用于控制性能。
+- `交通模式`：背景车辆模式。`普通` 为普通流量，`高峰` 为高峰波动，`事故/施工` 会启用运行时事件。
+- `背景车辆生成率（辆/分钟）`：数值越大，路段车辆数和拥塞越容易上升。
+- `交通时间步（秒）`：每次仿真步长 `dt`。
+- `每次刷新推进步数`：自动行驶时每次页面刷新推进多少个 timestep。
+- `事故/施工概率（每分钟）`：每分钟触发事故/施工的概率，仅 `事故/施工` 模式下使用。
+- `重规划检查间隔（秒）`：主导航车辆多久检查一次是否需要重规划。
+- `最小重规划间隔（秒）`：两次重规划之间的最小间隔，避免路线频繁抖动。
+- `重规划拥堵阈值`：前方路段拥塞超过该值时，会进入重规划候选。
+- `交通随机种子`：相同 seed 下，车辆生成和事件触发可复现。
+- `交通路段绘制数量上限`：最多绘制多少条交通状态边，用于控制性能。
 
 每条 edge 维护的动态字段包括：
 
@@ -619,11 +688,11 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 
 页面指标：
 
-- `Sim time`：当前仿真时间。
-- `Vehicles`：当前仍在路网中的车辆数量，包括背景车辆和主导航车辆。
-- `Avg speed`：全网平均当前速度。
-- `Congested edges`：当前拥塞路段数量。
-- `Reroutes`：主导航车辆重规划次数。
+- `仿真时间`：当前仿真时间。
+- `车辆数`：当前仍在路网中的车辆数量，包括背景车辆和主导航车辆。
+- `平均速度`：全网平均当前速度。
+- `拥堵路段`：当前拥塞路段数量。
+- `重规划次数`：主导航车辆重规划次数。
 
 日志和 JSON 调试区会显示：
 
@@ -642,28 +711,30 @@ timestep 1 ms -> 波前传播到下一批可达 neuron
 
 ## Web 性能与卡顿处理
 
-Streamlit 的交互模型是：每次拖动 slider 都会重新运行页面脚本。Folium 地图也是重新生成一个 HTML/Leaflet 地图。因此，当道路边很多、激活点很多时，拖动 `Car position` 或 `Wavefront timestep (ms)` 会卡顿。
+Streamlit 的交互模型是：每次控件变化都会重新运行页面脚本。旧版 Folium/Leaflet 需要在每次 rerun 时创建大量前端对象，因此杭州级别的道路图会明显卡顿。当前 GUI 使用轻量 HTML 组件渲染 OpenStreetMap/MapLibre/Canvas，主流程不再使用 `st_folium`。
 
 本项目已做的优化：
 
 - 地图道路几何在加载 OSM 图后预计算，并保存在 `st.session_state` 中。
-- Folium 使用 `prefer_canvas=True`，大量线段会尽量走 canvas 渲染。
-- `st_folium(..., returned_objects=[])`，减少前端返回对象带来的开销。
-- 侧边栏提供 `Draw base roads`，可以临时关闭普通道路底图，只显示路径、wavefront 和 marker。
-- 侧边栏提供 `Road edges to draw`，限制普通道路绘制数量。
-- 侧边栏提供 `Wavefront nodes to draw`，限制激活 neuron 点数量。
-- 侧边栏提供 `Traffic edges to draw`，限制拥堵边绘制数量。
+- 前端默认使用 OpenStreetMap 标准栅格底图，并一次性叠加当前 GeoJSON payload。
+- 如果提供 `data/tiles/osm/{z}/{x}/{y}.png`，浏览器从本地读取 OSM 栅格瓦片。
+- 如果提供 `data/tiles/hangzhou.mbtiles`，基础底图由 MapLibre 使用本地矢量瓦片渲染，通常比逐条绘制道路更流畅。
+- 侧边栏提供 `显示基础道路网络`，可以临时关闭本地 GraphML 道路叠加，只显示路径、wavefront 和车辆。
+- 侧边栏提供 `道路绘制数量上限`，限制本地 GraphML 道路叠加数量。
+- 侧边栏提供 `波前节点绘制数量上限`，限制激活 neuron 点数量。
+- 侧边栏提供 `交通路段绘制数量上限`，限制拥堵边绘制数量。
 
 推荐设置：
 
 ```text
-Road edges to draw      = 800 到 1500
-Wavefront nodes to draw = 300 到 800
-Draw base roads         = 关闭后拖动小车最快
-Bounding box            = 尽量只覆盖需要的区域
+道路绘制数量上限       = 800 到 1500
+波前节点绘制数量上限   = 300 到 800
+显示基础道路网络       = 关闭后自动行驶刷新最快
+OSM 栅格瓦片           = 要保留原版 OSM 样式时推荐提供 data/tiles/osm
+本地矢量瓦片           = 要更高性能时推荐提供 hangzhou.mbtiles
 ```
 
-如果只是观察小车沿路径移动，可以关闭 `Draw base roads`。如果只是观察 SNN 扩散，可以降低 `Road edges to draw`，保留 wavefront 点和边。
+如果只是观察车辆沿路径移动，可以关闭 `显示基础道路网络`。如果只是观察 SNN 扩散，可以降低 `道路绘制数量上限`，保留 wavefront 点和边。
 
 ## 有向道路与不可达问题
 
@@ -729,7 +800,7 @@ NavigationResult(
 - `path_length_m`：最终路径长度。
 - `path_travel_time_s`：最终路径估计通行时间。
 - `wavefront_steps`：GUI 中可视化的 wavefront frame 数。
-- `wavefront_time_max_ms`：GUI 中 `Wavefront timestep (ms)` 的最大时间。
+- `wavefront_time_max_ms`：GUI 中 `波前时间步（毫秒）` 的最大时间。
 - `spike_times_by_node`：每个 node/neuron 的首次发放时间，用于按 timestep 重建 wavefront 状态。
 
 若 Brian2Loihi 后端不可用，导航层会自动降级到 CPU-compatible wavefront，以保证 Web 闭环仍然可以运行。
@@ -759,11 +830,7 @@ python -m pytest -q
 - SimulationEngine 运行时生成车辆并更新指标。
 - 小型 toy graph 跑通导航 planner。
 
-当前验证结果：
-
-```text
-17 passed
-```
+当前验证结果以本地运行的 `python -m pytest -q` 为准。
 
 ## 常用命令
 
@@ -774,23 +841,30 @@ streamlit run app.py
 
 ```bash
 conda activate neuro-nav
+python desktop_app.py
+```
+
+```bash
+conda activate neuro-nav
 python -m pytest -q
 ```
 
 ```bash
 conda activate neuro-nav
-python -m compileall -q app.py app_demo.py src tests
+python -m compileall -q app.py app_demo.py desktop_app.py src tests
 ```
 
 ## 验收标准
 
 1. `streamlit run app.py` 能启动 Web GUI。
-2. 输入 `Shinjuku, Tokyo, Japan` 或 bbox 后能加载真实道路网络。
-3. 起点/终点经纬度能 snap 到最近道路节点。
-4. 点击 `Run SNN Navigation` 后调用 SNN planner。
-5. GUI 显示真实地图、道路网络、起点、终点、wavefront、最终路径和小车位置。
-6. 全流程不依赖 SUMO。
-7. 打开 `Simulated traffic` 后，背景车辆会随 timestep 持续生成。
-8. 路段颜色会根据当前 `congestion_level` 动态变化。
-9. 导航车辆只基于当前 `travel_time/current_speed/congestion_level` 判断是否重规划。
-10. 若发生重规划，JSON 日志会显示旧 ETA、新 ETA、重规划时间和受影响 edge。
+2. `python desktop_app.py` 能启动 PySide6 桌面 GUI。
+3. 页面固定地图区域为浙江省杭州市，且不暴露 place/bbox 输入。
+4. 起点/终点经纬度能限制在杭州范围内，并 snap 到最近道路节点。
+5. 点击 `运行 SNN 导航` 后调用 SNN planner。
+6. Web GUI 默认使用 OpenStreetMap 标准底图，并可切换到本地 OSM 栅格瓦片、MapLibre 矢量瓦片或 Canvas 降级渲染。
+7. 桌面 GUI 能显示本地 OSM 瓦片或 OSM 道路 geometry、DiGraph/SNN 节点、路线和车辆。
+8. 全流程不依赖 SUMO。
+9. 打开 `启用模拟交通` 后，背景车辆会随 timestep 持续生成。
+10. 路段颜色会根据当前 `congestion_level` 动态变化。
+11. 导航车辆只基于当前 `travel_time/current_speed/congestion_level` 判断是否重规划。
+12. 若发生重规划，JSON 日志会显示旧 ETA、新 ETA、重规划时间和受影响 edge。

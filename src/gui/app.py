@@ -1,4 +1,4 @@
-"""Streamlit + Folium GUI for real-map SNN navigation."""
+"""Streamlit GUI for offline real-map SNN navigation."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from maps import (
     load_hangzhou_graph,
     nearest_node_by_latlon,
     osmnx_multidigraph_to_digraph,
-    path_nodes_to_latlon,
 )
 from navigation import NavigationResult, WavefrontFrame, run_navigation
 from traffic import (
@@ -27,17 +26,21 @@ from traffic import (
     TrafficSnapshot,
     Vehicle,
 )
+from gui.offline_map import (
+    build_offline_map_payload,
+    get_offline_map_runtime,
+    render_offline_map,
+)
 
 # EdgePoints 是 GUI 层的道路几何缓存格式：
-# (起点 node id, 终点 node id, Folium 可直接绘制的 [(lat, lon), ...] 折线点)。
-# 预先缓存这份数据可以避免每次拖动 slider 时重复解析 edge geometry，减少页面卡顿。
+# (起点 node id, 终点 node id, 前端地图组件可直接绘制的 [(lat, lon), ...] 折线点)。
+# 预先缓存这份数据可以避免每次自动刷新时重复解析 edge geometry，减少页面卡顿。
 EdgePoints = list[tuple[int, int, list[tuple[float, float]]]]
 
 # EdgePointLookup 用于 O(1) 根据有向边 (u, v) 找到道路几何。
 # wavefront、交通拥堵和最终路径都需要频繁按边取坐标，所以单独建索引。
 EdgePointLookup = dict[tuple[int, int], list[tuple[float, float]]]
 
-FOLIUM_TILE_NAME = "OpenStreetMap"
 NETWORK_TYPE_LABELS = {
     "drive": "机动车道路",
     "walk": "步行道路",
@@ -68,17 +71,16 @@ PLAYBACK_DEFAULTS = {
 
 
 def _imports():
-    # Streamlit/Folium 是交互式 GUI 依赖。放在函数里导入，便于测试非 GUI 逻辑时
+    # Streamlit 是交互式 GUI 依赖。放在函数里导入，便于测试非 GUI 逻辑时
     # 不强制提前初始化 Streamlit runtime。
     try:
-        import folium
         import streamlit as st
-        from streamlit_folium import st_folium
+        import streamlit.components.v1 as components
     except Exception as exc:  # pragma: no cover - interactive dependency
         raise RuntimeError(
             "GUI dependencies are missing. Install them with `pip install -r requirements.txt`."
         ) from exc
-    return st, folium, st_folium
+    return st, components
 
 
 def _coordinate_in_bbox(lat: float, lon: float, bbox: BoundingBox = HANGZHOU_BBOX) -> bool:
@@ -163,35 +165,15 @@ def _reroute_decision_payload(decision) -> dict[str, object] | None:
     }
 
 
-def _graph_center(graph: nx.DiGraph) -> tuple[float, float]:
-    # Folium 地图中心使用 (lat, lon)。项目图里 lat/lon 来自 OSMnx 节点属性。
-    lats = [float(attrs["lat"]) for _node, attrs in graph.nodes(data=True)]
-    lons = [float(attrs["lon"]) for _node, attrs in graph.nodes(data=True)]
-    return sum(lats) / len(lats), sum(lons) / len(lons)
-
-
-def _fit_map_bounds(fmap, graph: nx.DiGraph, path_points: list[tuple[float, float]]) -> None:
-    # 如果已有最终路径，优先按路径范围缩放，用户能直接看到路线。
-    # 如果还没有路径，就按整个加载的道路网络范围缩放。
-    if len(path_points) >= 2:
-        lats = [point[0] for point in path_points]
-        lons = [point[1] for point in path_points]
-    else:
-        north, south, east, west = _graph_bounds(graph)
-        lats = [south, north]
-        lons = [west, east]
-    fmap.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
-
-
 def _graph_bounds(graph: nx.DiGraph) -> tuple[float, float, float, float]:
-    # 返回顺序是 north, south, east, west，和 GUI 中 bbox 的命名保持一致。
+    # 返回顺序是 north, south, east, west，和固定杭州范围的命名保持一致。
     lats = [float(attrs["lat"]) for _node, attrs in graph.nodes(data=True)]
     lons = [float(attrs["lon"]) for _node, attrs in graph.nodes(data=True)]
     return max(lats), min(lats), max(lons), min(lons)
 
 
 def _build_edge_points(graph: nx.DiGraph) -> EdgePoints:
-    # 将图中的每条有向边转换成 Folium PolyLine 坐标。
+    # 将图中的每条有向边转换成前端地图组件可绘制的折线坐标。
     # edge_geometry_to_latlon 会优先使用 OSM 原始 geometry；没有 geometry 时回退到端点直线。
     edge_points: EdgePoints = []
     for u, v in graph.edges():
@@ -217,83 +199,6 @@ def _points_for_edge(
     if points is not None:
         return points
     return edge_geometry_to_latlon(graph, int(u), int(v))
-
-
-def _add_network_edges(folium, fmap, edge_points: EdgePoints, max_edges: int) -> None:
-    # 普通道路底图只画前 max_edges 条，避免大地图一次绘制几万条边导致卡顿。
-    # 这里绘制的是灰色道路背景，不参与路径计算。
-    for idx, (_u, _v, points) in enumerate(edge_points):
-        if idx >= max_edges:
-            break
-        folium.PolyLine(points, color="#64748b", weight=1, opacity=0.34).add_to(fmap)
-
-
-def _traffic_color(congestion: float, blocked: bool) -> str:
-    # 交通拥堵颜色只用于 GUI 表达：
-    # 绿色=畅通，黄色=开始拥堵，红色=重度拥堵，深红=接近饱和/阻塞。
-    if blocked:
-        return "#7f1d1d"
-    if congestion >= 0.90:
-        return "#7f1d1d"
-    if congestion >= 0.70:
-        return "#dc2626"
-    if congestion >= 0.40:
-        return "#facc15"
-    return "#16a34a"
-
-
-def _add_traffic_overlay(
-    folium,
-    fmap,
-    graph: nx.DiGraph,
-    snapshot: TrafficSnapshot | None,
-    edge_lookup: EdgePointLookup,
-    *,
-    max_edges: int,
-) -> None:
-    # 将 TrafficSnapshot 叠加到地图上。
-    # 注意这里不修改 graph，只读取 snapshot 和 graph 中的几何信息进行绘制。
-    if snapshot is None:
-        return
-
-    # 优先绘制最严重的拥堵/阻塞边。max_edges 用于限制 Folium 图层数量。
-    ranked_states = sorted(
-        snapshot.edge_states.values(),
-        key=lambda state: (state.blocked, state.congestion, state.vehicle_count),
-        reverse=True,
-    )
-    for state in ranked_states[:max_edges]:
-        u, v = state.edge
-        points = _points_for_edge(edge_lookup, graph, u, v)
-        if len(points) < 2:
-            continue
-        folium.PolyLine(
-            points,
-            color=_traffic_color(state.congestion, state.blocked),
-            weight=6 if state.blocked else 4,
-            opacity=0.82,
-            dash_array="3,5" if state.blocked else None,
-            tooltip=(
-                f"交通路段 {u}->{v}，拥堵={state.congestion:.2f}，"
-                f"车辆={state.vehicle_count}，阻塞={state.blocked}"
-            ),
-        ).add_to(fmap)
-
-    # inhibited_nodes 表示拥堵路口对神经元发放的抑制强度。
-    # GUI 用紫红色圆点显示，语义是“进入该路口的边被额外增加 delay”。
-    for node, congestion in snapshot.inhibited_nodes.items():
-        if node not in graph:
-            continue
-        attrs = graph.nodes[node]
-        folium.CircleMarker(
-            location=(float(attrs["lat"]), float(attrs["lon"])),
-            radius=7,
-            color="#be123c",
-            fill=True,
-            fill_opacity=min(0.85, 0.25 + float(congestion) * 0.65),
-            weight=2,
-            tooltip=f"受抑制路口/神经元 {node}，拥堵={float(congestion):.2f}",
-        ).add_to(fmap)
 
 
 def _spike_times_by_node(result: NavigationResult) -> dict[int, float]:
@@ -355,69 +260,6 @@ def _wavefront_inflight_edges_at_time(graph: nx.DiGraph, result: NavigationResul
     return inflight
 
 
-def _newly_active_nodes_at_time(result: NavigationResult, time_ms: int) -> set[int]:
-    # 当前毫秒新激活的 neuron 用橙色高亮，其余已激活 neuron 用青色显示。
-    return {
-        int(node)
-        for node, spike_time in _spike_times_by_node(result).items()
-        if int(round(float(spike_time))) == int(time_ms)
-    }
-
-
-def _add_wavefront_timestep(
-    folium,
-    fmap,
-    graph: nx.DiGraph,
-    result: NavigationResult,
-    time_ms: int,
-    edge_lookup: EdgePointLookup,
-    max_nodes: int,
-) -> WavefrontFrame:
-    # 在 Folium 地图上绘制指定 timestep 的 SNN 扩散状态：
-    # - 橙色虚线：传播中的 synapse/edge；
-    # - 青色线：传播完成的 synapse/edge；
-    # - 橙色点：本 timestep 新发放的 neuron；
-    # - 青色点：此前已经发放过的 neuron。
-    if not result.wavefront_frames and not result.metadata.get("spike_times_by_node"):
-        return WavefrontFrame(t=int(time_ms), active_nodes=[], active_edges=[])
-
-    frame = _wavefront_frame_at_time(graph, result, int(time_ms))
-
-    # 先画传播中的边，作为“正在扩散”的动态视觉层。
-    for u, v in _wavefront_inflight_edges_at_time(graph, result, int(time_ms)):
-        points = _points_for_edge(edge_lookup, graph, u, v)
-        if len(points) >= 2:
-            folium.PolyLine(
-                points,
-                color="#f59e0b",
-                weight=3,
-                opacity=0.62,
-                dash_array="5,7",
-            ).add_to(fmap)
-
-    # 再画已经传播完成的边，表示 wavefront 已经确认到达的部分。
-    for u, v in frame.active_edges:
-        points = _points_for_edge(edge_lookup, graph, u, v)
-        if len(points) >= 2:
-            folium.PolyLine(points, color="#06b6d4", weight=2, opacity=0.58).add_to(fmap)
-
-    newly_active = _newly_active_nodes_at_time(result, int(time_ms))
-    # 新激活节点排在前面，确保 max_nodes 裁剪时优先保留最有信息量的点。
-    ordered_nodes = sorted(newly_active) + [node for node in frame.active_nodes if node not in newly_active]
-    for node in ordered_nodes[:max_nodes]:
-        attrs = graph.nodes[node]
-        is_new = node in newly_active
-        folium.CircleMarker(
-            location=(float(attrs["lat"]), float(attrs["lon"])),
-            radius=5 if is_new else 3,
-            color="#f97316" if is_new else "#0e7490",
-            fill=True,
-            fill_opacity=0.85 if is_new else 0.58,
-            weight=1 if is_new else 0,
-        ).add_to(fmap)
-    return frame
-
-
 def _wavefront_time_limit(result: NavigationResult | None) -> int:
     # GUI slider 的最大值。优先使用完整 spike time 的最大时间；
     # 没有 metadata 时回退到 wavefront_frames 的最大 t。
@@ -438,44 +280,6 @@ def _wavefront_time_caption(frame: WavefrontFrame, max_time_ms: int, drawn_node_
         f"波前时间步 t={frame.t}/{max_time_ms} 毫秒，"
         f"已激活节点={len(frame.active_nodes)}{clipped}，已激活边={len(frame.active_edges)}"
     )
-
-
-def _add_path_and_markers(
-    folium,
-    fmap,
-    graph: nx.DiGraph,
-    result: NavigationResult | None,
-    start_node: int,
-    goal_node: int,
-    car_index: int,
-    car_point: tuple[float, float] | None = None,
-) -> None:
-    # 绘制起点、终点、最终路径和小车位置。
-    # car_index 是路径折线点索引，不是 graph node id。
-    start_attrs = graph.nodes[start_node]
-    goal_attrs = graph.nodes[goal_node]
-    folium.Marker(
-        (float(start_attrs["lat"]), float(start_attrs["lon"])),
-        tooltip=f"起点节点 {start_node}",
-        icon=folium.Icon(color="green", icon="play"),
-    ).add_to(fmap)
-    folium.Marker(
-        (float(goal_attrs["lat"]), float(goal_attrs["lon"])),
-        tooltip=f"终点节点 {goal_node}",
-        icon=folium.Icon(color="purple", icon="flag"),
-    ).add_to(fmap)
-    if result is None or not result.path_nodes:
-        return
-    points = path_nodes_to_latlon(graph, result.path_nodes)
-    if len(points) >= 2:
-        # 红色粗线表示当前规划结果。交通重规划后，这条线可能改变。
-        folium.PolyLine(points, color="#dc2626", weight=6, opacity=0.95).add_to(fmap)
-        car_point = car_point or points[min(car_index, len(points) - 1)]
-        folium.Marker(
-            car_point,
-            tooltip="车辆",
-            icon=folium.Icon(color="red", icon="car", prefix="fa"),
-        ).add_to(fmap)
 
 
 def _distance_m(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -520,20 +324,6 @@ def _vehicle_position_latlon(
     if len(points) < 2:
         return None
     return _interpolate_polyline(points, float(vehicle.position_on_edge))
-
-
-def _add_previous_route_overlay(
-    folium,
-    fmap,
-    graph: nx.DiGraph,
-    previous_route: list[int],
-) -> None:
-    # 发生 reroute 后，用橙色虚线保留上一条剩余路线，便于对比新旧路径。
-    if len(previous_route) < 2:
-        return
-    points = path_nodes_to_latlon(graph, previous_route)
-    if len(points) >= 2:
-        folium.PolyLine(points, color="#f97316", weight=4, opacity=0.72, dash_array="8,8").add_to(fmap)
 
 
 def _default_points(graph: nx.DiGraph) -> tuple[float, float, float, float]:
@@ -633,22 +423,25 @@ def _load_hangzhou_graph_cached(st, network_type: str):
 def main() -> None:
     # main 是整个 Web 页面入口。Streamlit 的特点是每次控件变化都会从头执行 main，
     # 所以需要通过 st.session_state 保存地图、交通快照和上一次导航结果。
-    st, folium, st_folium = _imports()
+    st, components = _imports()
     st.set_page_config(page_title="杭州 OSM SNN 导航", layout="wide")
     st.title("杭州 OSM SNN 导航")
     _ensure_playback_state(st.session_state)
+    offline_map_runtime = get_offline_map_runtime()
 
     with st.sidebar:
         st.header("地图与规划")
         st.caption(f"当前地图区域：{DEFAULT_FIXED_MAP_REGION}")
         st.caption(
-            "地图数据优先从本地缓存加载；缓存不存在时将自动从 OpenStreetMap 下载并缓存。"
+            "地图图结构优先从本地缓存加载；缓存不存在时才会尝试从 OpenStreetMap 下载并缓存。"
         )
         st.caption(
             f"杭州经纬度范围：北 {HANGZHOU_BBOX.north:.3f}，南 {HANGZHOU_BBOX.south:.3f}，"
             f"东 {HANGZHOU_BBOX.east:.3f}，西 {HANGZHOU_BBOX.west:.3f}"
         )
-        st.caption(f"地图底图：{FOLIUM_TILE_NAME}")
+        st.caption(f"地图渲染器：{offline_map_runtime.renderer}")
+        for message in offline_map_runtime.messages:
+            st.caption(message)
 
         # network_type="drive" 会保留真实机动车道路方向，可能出现单行道不可达。
         network_type = st.selectbox(
@@ -661,7 +454,7 @@ def main() -> None:
             f"缓存文件：data/osm_cache/{HANGZHOU_CACHE_FILENAME_TEMPLATE.format(network_type=network_type)}"
         )
 
-        # 性能控制区：Folium 线段/点越多，交互越卡。
+        # 性能控制区：道路线段/波前点越多，前端绘制负载越高。
         max_edges = st.slider("道路绘制数量上限", 200, 8000, 2500, 100)
         draw_base_roads = st.checkbox("显示基础道路网络", value=True)
         max_wavefront_nodes = st.slider("波前节点绘制数量上限", 50, 3000, 700, 50)
@@ -919,11 +712,8 @@ def main() -> None:
         else:
             st.info(status_message)
 
-    # path_points 是最终路径的折线坐标，用于地图缩放。
-    path_points = path_nodes_to_latlon(graph, result.path_nodes) if result else []
     simulation_vehicle = traffic_engine.navigation_vehicle if traffic_engine is not None else None
     actual_car_point = _vehicle_position_latlon(graph, edge_lookup, simulation_vehicle)
-    car_index = 0
     wave_time_ms = 0
     wavefront_frame = WavefrontFrame(t=0, active_nodes=[], active_edges=[])
     max_wave_time_ms = _wavefront_time_limit(result)
@@ -942,45 +732,33 @@ def main() -> None:
         else:
             wave_time_ms = 0
 
-    # Folium 地图每次 rerun 都重新生成。prefer_canvas=True 可以缓解大量线段绘制的卡顿。
-    center = _graph_center(graph)
-    fmap = folium.Map(location=center, zoom_start=14, tiles=FOLIUM_TILE_NAME, prefer_canvas=True, control_scale=True)
-    if draw_base_roads:
-        # 普通道路底图；关闭后拖动小车或 wavefront 会更流畅。
-        _add_network_edges(folium, fmap, edge_points, int(max_edges))
-
-    # 交通图层画在普通道路之上、wavefront 和最终路径之下。
-    _add_traffic_overlay(
-        folium,
-        fmap,
-        graph,
-        traffic_snapshot if bool(traffic_enabled) else None,
-        edge_lookup,
-        max_edges=int(max_traffic_edges),
-    )
     if result:
         # wavefront 图层按当前毫秒重建，不需要重新运行 SNN。
-        wavefront_frame = _add_wavefront_timestep(
-            folium,
-            fmap,
-            graph,
-            result,
-            wave_time_ms,
-            edge_lookup,
-            int(max_wavefront_nodes),
-        )
-    if traffic_engine is not None:
-        _add_previous_route_overlay(folium, fmap, graph, traffic_engine.previous_navigation_route)
-    # 最终路径和起终点 marker 放到最上层，保证用户容易识别当前路线。
-    _add_path_and_markers(folium, fmap, graph, result, start_node, goal_node, car_index, actual_car_point)
-    _fit_map_bounds(fmap, graph, path_points)
+        wavefront_frame = _wavefront_frame_at_time(graph, result, int(wave_time_ms))
+    inflight_edges = _wavefront_inflight_edges_at_time(graph, result, int(wave_time_ms)) if result else []
+
+    map_payload = build_offline_map_payload(
+        graph,
+        edge_points,
+        edge_lookup,
+        result=result,
+        start_node=start_node,
+        goal_node=goal_node,
+        car_point=actual_car_point,
+        traffic_snapshot=traffic_snapshot if bool(traffic_enabled) else None,
+        previous_route=traffic_engine.previous_navigation_route if traffic_engine is not None else [],
+        wavefront_frame=wavefront_frame,
+        inflight_edges=inflight_edges,
+        draw_base_roads=bool(draw_base_roads),
+        max_base_edges=int(max_edges),
+        max_traffic_edges=int(max_traffic_edges),
+        max_wavefront_nodes=int(max_wavefront_nodes),
+    )
 
     if result and result.wavefront_frames:
         st.caption(_wavefront_time_caption(wavefront_frame, max_wave_time_ms, int(max_wavefront_nodes)))
 
-    # returned_objects=[] 避免 Streamlit-Folium 把地图点击/缩放状态大量回传，
-    # 这对 slider 交互性能有明显帮助。
-    st_folium(fmap, width=None, height=720, returned_objects=[])
+    render_offline_map(components, map_payload, offline_map_runtime, height=720)
 
     # 指标区：展示 snap 后节点、路径长度、通行时间和 SNN 运行耗时。
     metric_cols = st.columns(6)

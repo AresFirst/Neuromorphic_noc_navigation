@@ -6,3 +6,11 @@ __pycache__/
 .pytest_cache/
 .matplotlib-cache/
 cache/
+data/tiles/*.mbtiles
+data/tiles/*.pmtiles
+data/tiles/osm/
+data/offline_map/assets/maplibre-gl.js
+data/offline_map/assets/maplibre-gl.css
+data/offline_map/assets/pmtiles.js
+data/offline_map/assets/leaflet.js
+data/offline_map/assets/leaflet.css

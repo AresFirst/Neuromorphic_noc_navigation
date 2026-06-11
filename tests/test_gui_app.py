@@ -8,8 +8,8 @@ import networkx as nx
 
 import gui.app as gui_app
 from maps import HANGZHOU_BBOX
+from gui.offline_map import CANVAS_FALLBACK_RENDERER_NAME, MAP_RENDERER_NAME, OSM_RASTER_RENDERER_NAME
 from gui.app import (
-    FOLIUM_TILE_NAME,
     _coordinate_in_bbox,
     _ensure_playback_state,
     _finish_playback_state,
@@ -95,8 +95,12 @@ def test_gui_main_no_longer_exposes_region_or_tile_selectors():
     assert "Map tiles" not in source
     assert "Car position" not in source
     assert "Step Dynamic Traffic" not in source
-    assert FOLIUM_TILE_NAME == "OpenStreetMap"
-    assert "tiles=FOLIUM_TILE_NAME" in source
+    assert "folium.Map" not in source
+    assert "st_folium" not in source
+    assert "render_offline_map" in source
+    assert MAP_RENDERER_NAME == "MapLibre 本地矢量瓦片"
+    assert OSM_RASTER_RENDERER_NAME == "OpenStreetMap 标准样式"
+    assert CANVAS_FALLBACK_RENDERER_NAME == "Canvas 离线降级渲染"
 
 
 def test_gui_main_contains_required_chinese_labels():
@@ -111,6 +115,7 @@ def test_gui_main_contains_required_chinese_labels():
         "终点纬度",
         "终点经度",
         "显示基础道路网络",
+        "地图渲染器：",
         "波前时间步（毫秒）",
         "模拟交通",
         "交通模式",

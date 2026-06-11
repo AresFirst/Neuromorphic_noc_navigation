@@ -10,6 +10,7 @@ shapely
 folium
 streamlit
 streamlit-folium
+PySide6
 
 # Brian2Loihi planner
 brian2
