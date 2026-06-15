@@ -69,7 +69,14 @@ def run_navigation(
     """Run the SNN pipeline and return a standard navigation result."""
     config = loihi_config or {}
     started = time.perf_counter()
+    loihi_runtime_sec: float | None = None
+    cpu_wavefront_runtime_sec: float | None = None
+    wavefront_runtime_sec = 0.0
+    parent_trace_runtime_sec = 0.0
+    path_reconstruction_runtime_sec = 0.0
+    final_wavefront_backend = None
     # 第一阶段：运行 Brian2Loihi 或 CPU 参考 wavefront，得到每个节点的首次 spike 时间。
+    wavefront_started = time.perf_counter()
     wavefront = run_wavefront(
         graph,
         int(start_node),
@@ -81,10 +88,18 @@ def run_navigation(
         refractory_ms=int(config.get("refractory_ms", 1000)),
         seed=int(config.get("seed", 0)),
     )
+    first_wavefront_runtime_sec = time.perf_counter() - wavefront_started
+    if use_loihi:
+        loihi_runtime_sec = first_wavefront_runtime_sec
+    else:
+        cpu_wavefront_runtime_sec = first_wavefront_runtime_sec
+    wavefront_runtime_sec = first_wavefront_runtime_sec
+    final_wavefront_backend = wavefront.get("backend")
     loihi_error = None
     if use_loihi and not wavefront.get("success"):
         # Loihi 后端不可用或失败时自动降级到 CPU reference，保证 GUI 闭环仍可运行。
         loihi_error = wavefront.get("error")
+        wavefront_started = time.perf_counter()
         wavefront = run_wavefront(
             graph,
             int(start_node),
@@ -96,6 +111,9 @@ def run_navigation(
             refractory_ms=int(config.get("refractory_ms", 1000)),
             seed=int(config.get("seed", 0)),
         )
+        cpu_wavefront_runtime_sec = time.perf_counter() - wavefront_started
+        wavefront_runtime_sec = cpu_wavefront_runtime_sec
+        final_wavefront_backend = wavefront.get("backend")
     # 统一把后端返回的 key 转成 int，避免 GraphML 字符串节点和 JSON 显示造成混乱。
     spike_times = {
         int(node): float(time_ms)
@@ -107,15 +125,19 @@ def run_navigation(
     if wavefront.get("success"):
         try:
             # 第二阶段：用 spike 时间和图拓扑推断每个节点的父节点。
+            parent_trace_started = time.perf_counter()
             parent_trace = infer_parent_trace_from_spikes(
                 graph,
                 spike_times,
                 int(start_node),
                 delay_attr=delay_attr,
             )
+            parent_trace_runtime_sec = time.perf_counter() - parent_trace_started
             # 第三阶段：从 goal 沿 parent_trace 回溯到 start，得到最终路径。
+            path_reconstruction_started = time.perf_counter()
             path_nodes = reconstruct_path_from_parent(parent_trace, int(start_node), int(goal_node))
             total_cost = compute_path_cost(graph, path_nodes, weight=cost_attr)
+            path_reconstruction_runtime_sec = time.perf_counter() - path_reconstruction_started
         except Exception as exc:
             error = str(exc)
             path_nodes = []
@@ -148,6 +170,13 @@ def run_navigation(
             "loihi_error": loihi_error,
             "snn_runtime_sec": float(elapsed),
             "snn_runtime_scope": "SNN wavefront + parent trace，不含地图加载、网页绘制和传统算法对比",
+            "wavefront_runtime_sec": float(wavefront_runtime_sec),
+            "brian2loihi_simulator_runtime_sec": loihi_runtime_sec,
+            "cpu_wavefront_runtime_sec": cpu_wavefront_runtime_sec,
+            "final_wavefront_backend": final_wavefront_backend,
+            "stdp_parent_trace_runtime_sec": float(parent_trace_runtime_sec),
+            "path_reconstruction_runtime_sec": float(path_reconstruction_runtime_sec),
+            "stdp_path_backtrace_runtime_sec": float(parent_trace_runtime_sec + path_reconstruction_runtime_sec),
             "target_arrival_time_ms": wavefront.get("target_arrival_time_ms"),
             "num_spikes": int(wavefront.get("num_spikes", 0) or 0),
             "active_neurons": int(wavefront.get("active_neurons", 0) or 0),

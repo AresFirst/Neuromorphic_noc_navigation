@@ -31,6 +31,13 @@ def test_toy_graph_runs_navigation_planner_with_cpu_compatible_wavefront():
     assert result.metadata["path_travel_time_s"] == 3.0
     assert result.metadata["success"] is True
     assert result.metadata["backend"] == "cpu_reference"
+    assert result.metadata["wavefront_runtime_sec"] >= 0.0
+    assert result.metadata["brian2loihi_simulator_runtime_sec"] is None
+    assert result.metadata["cpu_wavefront_runtime_sec"] >= 0.0
+    assert result.metadata["final_wavefront_backend"] == "cpu_reference"
+    assert result.metadata["stdp_parent_trace_runtime_sec"] >= 0.0
+    assert result.metadata["path_reconstruction_runtime_sec"] >= 0.0
+    assert result.metadata["stdp_path_backtrace_runtime_sec"] >= 0.0
     assert result.wavefront_frames
     assert result.metadata["spike_times_by_node"] == {0: 0.0, 1: 1.0, 2: 3.0}
     assert result.metadata["wavefront_time_max_ms"] == 3
@@ -103,6 +110,13 @@ def test_incremental_snn_avoids_closed_neurons_and_still_benchmarks_full_recompu
     assert result.path_nodes == [0, 2, 3]
     assert result.metadata["backend"] == "incremental_snn_cached_graph"
     assert result.metadata["snn_setup_reused"] is True
+    assert result.metadata["wavefront_runtime_sec"] >= 0.0
+    assert result.metadata["brian2loihi_simulator_runtime_sec"] is None
+    assert result.metadata["cpu_wavefront_runtime_sec"] >= 0.0
+    assert result.metadata["final_wavefront_backend"] == "cpu_reference_incremental"
+    assert result.metadata["stdp_parent_trace_runtime_sec"] >= 0.0
+    assert result.metadata["path_reconstruction_runtime_sec"] >= 0.0
+    assert result.metadata["stdp_path_backtrace_runtime_sec"] >= 0.0
     assert result.metadata["closed_neuron_count"] == 1
     assert result.metadata["closed_synapse_count"] == 1
     assert result.metadata["algorithm_benchmarks"]["dijkstra"]["path_nodes"] == [0, 2, 3]
@@ -142,6 +156,10 @@ def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):
     assert result.path_nodes == [0, 1, 2]
     assert result.metadata["backend"] == "cpu_reference"
     assert result.metadata["loihi_error"] == "backend missing"
+    assert result.metadata["brian2loihi_simulator_runtime_sec"] is not None
+    assert result.metadata["cpu_wavefront_runtime_sec"] is not None
+    assert result.metadata["final_wavefront_backend"] == "cpu_reference"
+    assert result.metadata["stdp_path_backtrace_runtime_sec"] >= 0.0
 
 
 def test_unreachable_goal_can_still_have_two_wavefront_frames():

@@ -10,11 +10,14 @@ import gui.app as gui_app
 from maps import HANGZHOU_BBOX
 from gui.app import (
     FOLIUM_TILE_NAME,
+    ROUTE_COLORS,
+    _add_comparison_route_overlays,
     _algorithm_comparison_rows,
     _coordinate_in_bbox,
     _ensure_playback_state,
     _finish_playback_state,
     _pause_playback_state,
+    _runtime_metric_rows,
     _start_playback_state,
     _validate_hangzhou_coordinates,
     _wavefront_frame_at_time,
@@ -134,6 +137,7 @@ def test_gui_main_contains_required_chinese_labels():
         "路线折线点数",
         "SNN算法耗时",
         "算法运行耗时对比",
+        "详细耗时指标",
         "调试信息 / 元数据 / 日志",
     ]:
         assert label in source
@@ -210,3 +214,99 @@ def test_algorithm_comparison_rows_include_independent_benchmarks():
     assert rows[1]["耗时口径"] == "隔离图快照完整重算"
     assert rows[1]["路线关系"] == "与 SNN 相同"
     assert rows[2]["路线关系"] == "与 SNN 相同"
+
+
+def test_runtime_metric_rows_include_map_snn_stdp_loihi_and_classical_timings():
+    result = NavigationResult(
+        start_node=0,
+        goal_node=2,
+        path_nodes=[0, 1, 2],
+        path_edges=[(0, 1), (1, 2)],
+        total_cost=3.0,
+        metadata={
+            "success": True,
+            "snn_runtime_sec": 0.12,
+            "snn_runtime_scope": "SNN test scope",
+            "brian2loihi_simulator_runtime_sec": 0.02,
+            "cpu_wavefront_runtime_sec": None,
+            "final_wavefront_backend": "brian2loihi",
+            "stdp_parent_trace_runtime_sec": 0.003,
+            "path_reconstruction_runtime_sec": 0.004,
+            "stdp_path_backtrace_runtime_sec": 0.007,
+            "algorithm_benchmarks": {
+                "dijkstra": {
+                    "label": "Dijkstra",
+                    "success": True,
+                    "runtime_sec": 0.011,
+                    "runtime_scope": "Dijkstra isolated",
+                },
+                "astar": {
+                    "label": "A*",
+                    "success": True,
+                    "runtime_sec": 0.009,
+                    "runtime_scope": "A* isolated",
+                },
+            },
+        },
+    )
+
+    rows = _runtime_metric_rows(
+        result,
+        {
+            "total_runtime_sec": 1.2,
+            "graph_runtime_sec": 0.8,
+            "geometry_runtime_sec": 0.4,
+        },
+    )
+    by_metric = {row["指标"]: row for row in rows}
+
+    assert by_metric["地图 load 总用时"]["耗时（秒）"] == 1.2
+    assert by_metric["地图图数据 load 用时"]["耗时（秒）"] == 0.8
+    assert by_metric["地图道路几何缓存用时"]["耗时（秒）"] == 0.4
+    assert by_metric["SNN 总规划用时"]["耗时（秒）"] == 0.12
+    assert by_metric["Brian2Loihi 仿真器用时"]["耗时（秒）"] == 0.02
+    assert by_metric["STDP parent trace 用时"]["耗时（秒）"] == 0.003
+    assert by_metric["路径重建与成本计算用时"]["耗时（秒）"] == 0.004
+    assert by_metric["STDP 路径回溯总用时"]["耗时（秒）"] == 0.007
+    assert by_metric["Dijkstra 规划用时"]["耗时（秒）"] == 0.011
+    assert by_metric["A* 规划用时"]["耗时（秒）"] == 0.009
+
+
+def test_comparison_route_overlays_always_draw_astar_even_when_path_matches_snn():
+    graph = nx.DiGraph()
+    graph.add_node(0, lat=30.0, lon=120.0)
+    graph.add_node(1, lat=30.1, lon=120.1)
+    graph.add_node(2, lat=30.2, lon=120.2)
+    graph.add_edge(0, 1)
+    graph.add_edge(1, 2)
+    result = NavigationResult(
+        start_node=0,
+        goal_node=2,
+        path_nodes=[0, 1, 2],
+        path_edges=[(0, 1), (1, 2)],
+        metadata={
+            "success": True,
+            "algorithm_benchmarks": {
+                "dijkstra": {"success": True, "path_nodes": [0, 1, 2]},
+                "astar": {"success": True, "path_nodes": [0, 1, 2]},
+            },
+        },
+    )
+    calls: list[dict[str, object]] = []
+
+    class FakePolyLine:
+        def __init__(self, points, **kwargs):
+            self.points = points
+            self.kwargs = kwargs
+
+        def add_to(self, _fmap):
+            calls.append(self.kwargs)
+            return self
+
+    class FakeFolium:
+        PolyLine = FakePolyLine
+
+    _add_comparison_route_overlays(FakeFolium, object(), graph, result)
+
+    assert [call["tooltip"] for call in calls] == ["Dijkstra 路线", "A* 路线"]
+    assert [call["color"] for call in calls] == [ROUTE_COLORS["dijkstra"], ROUTE_COLORS["astar"]]

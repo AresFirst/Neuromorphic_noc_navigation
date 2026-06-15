@@ -620,6 +620,11 @@ def _optional_float(value: object) -> float | None:
     return parsed
 
 
+def _optional_seconds(value: object) -> float | None:
+    parsed = _optional_float(value)
+    return round(parsed, 6) if parsed is not None else None
+
+
 def _algorithm_comparison_rows(result: NavigationResult | None) -> list[dict[str, object]]:
     if result is None:
         return []
@@ -665,6 +670,108 @@ def _algorithm_comparison_rows(result: NavigationResult | None) -> list[dict[str
         if path_nodes:
             rows_label = str(benchmark.get("label") or benchmark.get("algorithm") or "")
             known_paths.append((rows_label, tuple(path_nodes)))
+    return rows
+
+
+def _runtime_metric_rows(
+    result: NavigationResult | None,
+    map_load_metrics: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if map_load_metrics:
+        rows.extend(
+            [
+                {
+                    "指标": "地图 load 总用时",
+                    "耗时（秒）": _optional_seconds(map_load_metrics.get("total_runtime_sec")),
+                    "计时范围": "当前点击加载地图事件的图数据取回/构建 + 道路几何缓存",
+                    "状态": "已记录",
+                },
+                {
+                    "指标": "地图图数据 load 用时",
+                    "耗时（秒）": _optional_seconds(map_load_metrics.get("graph_runtime_sec")),
+                    "计时范围": "_load_hangzhou_graph_cached 调用；缓存未命中时包含 load_hangzhou_graph + 图转换",
+                    "状态": "已记录",
+                },
+                {
+                    "指标": "地图道路几何缓存用时",
+                    "耗时（秒）": _optional_seconds(map_load_metrics.get("geometry_runtime_sec")),
+                    "计时范围": "_build_edge_points + _edge_point_lookup",
+                    "状态": "已记录",
+                },
+            ]
+        )
+    else:
+        rows.append(
+            {
+                "指标": "地图 load 总用时",
+                "耗时（秒）": None,
+                "计时范围": "点击加载地图后的当前会话计时",
+                "状态": "尚未记录",
+            }
+        )
+
+    if result is None:
+        return rows
+
+    metadata = result.metadata
+    rows.extend(
+        [
+            {
+                "指标": "SNN 总规划用时",
+                "耗时（秒）": _optional_seconds(metadata.get("snn_runtime_sec")),
+                "计时范围": str(metadata.get("snn_runtime_scope") or "SNN wavefront + STDP 回溯"),
+                "状态": _navigation_status_label(result),
+            },
+            {
+                "指标": "Brian2Loihi 仿真器用时",
+                "耗时（秒）": _optional_seconds(metadata.get("brian2loihi_simulator_runtime_sec")),
+                "计时范围": "run_wavefront(use_loihi=True) 的实际调用耗时；不可用时为空或为失败检测耗时",
+                "状态": "失败后降级"
+                if metadata.get("loihi_error")
+                else ("已使用" if metadata.get("brian2loihi_simulator_runtime_sec") is not None else "本次未使用"),
+            },
+            {
+                "指标": "CPU wavefront / fallback 用时",
+                "耗时（秒）": _optional_seconds(metadata.get("cpu_wavefront_runtime_sec")),
+                "计时范围": "CPU reference wavefront 或增量 pulse",
+                "状态": str(metadata.get("final_wavefront_backend") or metadata.get("backend") or ""),
+            },
+            {
+                "指标": "STDP parent trace 用时",
+                "耗时（秒）": _optional_seconds(metadata.get("stdp_parent_trace_runtime_sec")),
+                "计时范围": "infer_parent_trace_from_spikes",
+                "状态": "成功" if metadata.get("stdp_parent_trace_runtime_sec", 0.0) else "未执行或不可达",
+            },
+            {
+                "指标": "路径重建与成本计算用时",
+                "耗时（秒）": _optional_seconds(metadata.get("path_reconstruction_runtime_sec")),
+                "计时范围": "reconstruct_path_from_parent + compute_path_cost",
+                "状态": "成功" if result.path_nodes else "未生成路径",
+            },
+            {
+                "指标": "STDP 路径回溯总用时",
+                "耗时（秒）": _optional_seconds(metadata.get("stdp_path_backtrace_runtime_sec")),
+                "计时范围": "parent trace + 路径重建 + 成本计算",
+                "状态": "成功" if result.path_nodes else "未生成路径",
+            },
+        ]
+    )
+
+    benchmarks = metadata.get("algorithm_benchmarks") or {}
+    if isinstance(benchmarks, dict):
+        for key in ("dijkstra", "astar"):
+            payload = benchmarks.get(key) or {}
+            if not isinstance(payload, dict):
+                continue
+            rows.append(
+                {
+                    "指标": f"{payload.get('label') or key} 规划用时",
+                    "耗时（秒）": _optional_seconds(payload.get("runtime_sec")),
+                    "计时范围": str(payload.get("runtime_scope") or "隔离图快照上的完整路径重算"),
+                    "状态": "成功" if bool(payload.get("success")) else f"失败：{payload.get('error') or ''}",
+                }
+            )
     return rows
 
 
@@ -783,12 +890,24 @@ def main() -> None:
     if load_clicked:
         try:
             with st.spinner("正在加载杭州道路网络..."):
+                map_load_started = time.perf_counter()
                 # road_graph 是 base_graph：只包含 OSM 基础道路和基础 SNN delay。
                 # 后续交通拥堵不会直接改这个图，而是生成临时 planning_graph。
+                graph_load_started = time.perf_counter()
                 st.session_state.road_graph = _load_hangzhou_graph_cached(st)
+                graph_load_runtime_sec = time.perf_counter() - graph_load_started
                 # 加载地图后立即预计算所有道路几何。后续 rerun 时直接复用，减少卡顿。
+                geometry_started = time.perf_counter()
                 st.session_state.road_edge_points = _build_edge_points(st.session_state.road_graph)
                 st.session_state.edge_point_lookup = _edge_point_lookup(st.session_state.road_edge_points)
+                geometry_runtime_sec = time.perf_counter() - geometry_started
+                st.session_state.map_load_metrics = {
+                    "total_runtime_sec": float(time.perf_counter() - map_load_started),
+                    "graph_runtime_sec": float(graph_load_runtime_sec),
+                    "geometry_runtime_sec": float(geometry_runtime_sec),
+                    "node_count": int(st.session_state.road_graph.number_of_nodes()),
+                    "edge_count": int(st.session_state.road_graph.number_of_edges()),
+                }
 
                 # 新地图意味着旧路线和旧交通状态都不再适用，必须清空。
                 st.session_state.navigation_result = None
@@ -1048,6 +1167,10 @@ def main() -> None:
     if comparison_rows:
         st.subheader("算法运行耗时对比")
         st.table(comparison_rows)
+    timing_rows = _runtime_metric_rows(result, st.session_state.get("map_load_metrics"))
+    if timing_rows:
+        st.subheader("详细耗时指标")
+        st.table(timing_rows)
 
     if traffic_engine is not None:
         # 动态交通指标区：全部来自当前 SimulationEngine 状态，不含未来信息。
@@ -1077,6 +1200,7 @@ def main() -> None:
                 "错误": result.metadata.get("error") if result else None,
                 "Loihi 错误": result.metadata.get("loihi_error") if result else None,
                 "算法基准": result.metadata.get("algorithm_benchmarks") if result else {},
+                "地图加载耗时": st.session_state.get("map_load_metrics") or {},
                 "存在有向路径": path_exists,
                 "模拟交通状态": "运行中" if traffic_engine is not None else "未启动",
                 "交通步数": int(st.session_state.get("traffic_step", 0)),
