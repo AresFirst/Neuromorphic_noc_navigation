@@ -48,8 +48,7 @@ MAX_BASE_ROAD_EDGES = 0
 MAX_TRAFFIC_EDGES = 80
 TRAFFIC_STEPS_PER_REFRESH = 1
 ROUTE_CONGESTION_INTERVAL_M = 5_000.0
-TRAFFIC_DT_SECONDS = 20.0
-PLAYBACK_FRAME_SECONDS = 1.0
+TRAFFIC_DT_SECONDS = 180.0
 ROUTE_COLORS = {
     "snn": "#dc2626",
     "dijkstra": "#2563eb",
@@ -561,36 +560,25 @@ def _add_comparison_route_overlays(
 ) -> None:
     if result is None or not result.path_nodes:
         return
-    styles = {
-        "dijkstra": {"weight": 5, "opacity": 0.72, "dash_array": "10,7"},
-        "astar": {"weight": 3, "opacity": 0.92, "dash_array": "2,7"},
-    }
+    snn_path = [int(node) for node in result.path_nodes]
+    drawn_paths = {tuple(snn_path)}
     for algorithm, label in (("dijkstra", "Dijkstra"), ("astar", "A*")):
         path_nodes = _benchmark_path_nodes(result, algorithm)
-        if len(path_nodes) < 2:
+        path_key = tuple(path_nodes)
+        if len(path_nodes) < 2 or path_key in drawn_paths:
             continue
         points = path_nodes_to_latlon(graph, path_nodes)
         if len(points) < 2:
             continue
-        style = styles[algorithm]
+        drawn_paths.add(path_key)
         folium.PolyLine(
             points,
             color=ROUTE_COLORS[algorithm],
-            weight=int(style["weight"]),
-            opacity=float(style["opacity"]),
-            dash_array=str(style["dash_array"]),
+            weight=4,
+            opacity=0.86,
+            dash_array="7,7",
             tooltip=f"{label} 路线",
         ).add_to(fmap)
-
-
-def _route_relation(path_nodes: list[int], known_paths: list[tuple[str, tuple[int, ...]]]) -> str:
-    if len(path_nodes) < 2:
-        return "无可用路线"
-    path_key = tuple(int(node) for node in path_nodes)
-    for label, known_path in known_paths:
-        if path_key == known_path:
-            return f"与 {label} 相同"
-    return "单独路线"
 
 
 def _default_points(graph: nx.DiGraph) -> tuple[float, float, float, float]:
@@ -625,14 +613,12 @@ def _algorithm_comparison_rows(result: NavigationResult | None) -> list[dict[str
         return []
     totals = result.metadata.get("routing_runtime_totals") or {}
     snn_total = totals.get("snn") if isinstance(totals, dict) else None
-    known_paths: list[tuple[str, tuple[int, ...]]] = [("SNN", tuple(int(node) for node in result.path_nodes))]
     rows: list[dict[str, object]] = [
         {
             "算法": "SNN",
-            "算法计算耗时（秒）": round(_metric_float(result, "snn_runtime_sec"), 6),
+            "规划核心耗时（秒）": round(_metric_float(result, "snn_runtime_sec"), 6),
             "累计耗时（秒）": round(float(snn_total), 6) if snn_total is not None else None,
             "耗时口径": str(result.metadata.get("snn_runtime_scope") or "SNN 规划核心"),
-            "路线关系": "当前主路线",
             "状态": _navigation_status_label(result),
             "路径节点数": len(result.path_nodes),
             "总成本": _optional_float(result.total_cost),
@@ -647,24 +633,18 @@ def _algorithm_comparison_rows(result: NavigationResult | None) -> list[dict[str
             continue
         algorithm_key = str(benchmark.get("algorithm") or "")
         total_value = totals.get(algorithm_key) if isinstance(totals, dict) and algorithm_key else None
-        path_nodes = [int(node) for node in benchmark.get("path_nodes", [])]
-        relation = _route_relation(path_nodes, known_paths)
         rows.append(
             {
                 "算法": str(benchmark.get("label") or benchmark.get("algorithm") or ""),
-                "算法计算耗时（秒）": round(float(benchmark.get("runtime_sec", 0.0) or 0.0), 6),
+                "规划核心耗时（秒）": round(float(benchmark.get("runtime_sec", 0.0) or 0.0), 6),
                 "累计耗时（秒）": round(float(total_value), 6) if total_value is not None else None,
                 "耗时口径": str(benchmark.get("runtime_scope") or "隔离图快照完整重算"),
-                "路线关系": relation,
                 "状态": "成功" if bool(benchmark.get("success")) else "失败",
                 "路径节点数": int(benchmark.get("path_node_count", len(benchmark.get("path_nodes", []))) or 0),
                 "总成本": _optional_float(benchmark.get("total_cost")),
                 "预计通行时间（秒）": _optional_float(benchmark.get("path_travel_time_s")),
             }
         )
-        if path_nodes:
-            rows_label = str(benchmark.get("label") or benchmark.get("algorithm") or "")
-            known_paths.append((rows_label, tuple(path_nodes)))
     return rows
 
 
@@ -1014,34 +994,30 @@ def main() -> None:
     )
     if traffic_engine is not None:
         _add_previous_route_overlay(folium, fmap, graph, traffic_engine.previous_navigation_route)
+    _add_comparison_route_overlays(folium, fmap, graph, result)
     # 最终路径和起终点 marker 放到最上层，保证用户容易识别当前路线。
     _add_path_and_markers(folium, fmap, graph, result, start_node, goal_node, car_index, actual_car_point)
-    _add_comparison_route_overlays(folium, fmap, graph, result)
     _fit_map_bounds(fmap, graph, path_points)
 
     # returned_objects=[] 避免 Streamlit-Folium 把地图点击/缩放状态大量回传，
     # 这对 slider 交互性能有明显帮助。
     st_folium(fmap, width=None, height=720, returned_objects=[])
 
-    # 指标区：展示 snap 后节点、地图规模、路径长度、通行时间和 SNN 算法耗时。
-    network_cols = st.columns(4)
-    network_cols[0].metric("起点节点", str(start_node))
-    network_cols[1].metric("终点节点", str(goal_node))
-    network_cols[2].metric("地图节点数", str(graph.number_of_nodes()))
-    network_cols[3].metric("地图边数", str(graph.number_of_edges()))
-    route_cols = st.columns(5)
-    route_cols[0].metric("路线节点数", str(len(result.path_nodes) if result else 0))
-    route_cols[1].metric("路线折线点数", str(len(path_points)))
-    route_cols[2].metric(
+    # 指标区：展示 snap 后节点、路径长度、通行时间和 SNN 运行耗时。
+    metric_cols = st.columns(6)
+    metric_cols[0].metric("起点节点", str(start_node))
+    metric_cols[1].metric("终点节点", str(goal_node))
+    metric_cols[2].metric("路径节点数", str(len(result.path_nodes) if result else 0))
+    metric_cols[3].metric(
         "路径长度",
         f"{_metric_float(result, 'path_length_m'):.1f} m",
     )
-    route_cols[3].metric(
+    metric_cols[4].metric(
         "预计通行时间",
         f"{_metric_float(result, 'path_travel_time_s'):.1f} s",
     )
-    route_cols[4].metric(
-        "SNN算法耗时",
+    metric_cols[5].metric(
+        "SNN规划核心耗时",
         f"{_metric_float(result, 'snn_runtime_sec'):.6f} s",
     )
     comparison_rows = _algorithm_comparison_rows(result)
@@ -1100,7 +1076,7 @@ def main() -> None:
         st.warning(f"导航错误：{result.metadata['error']}")
 
     if st.session_state.get("vehicle_running") and st.session_state.get("traffic_engine") is not None:
-        time.sleep(PLAYBACK_FRAME_SECONDS)
+        time.sleep(0.35)
         st.rerun()
 
 

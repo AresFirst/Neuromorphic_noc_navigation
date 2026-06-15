@@ -81,7 +81,6 @@ def test_load_hangzhou_graph_can_crop_legacy_cache(tmp_path, monkeypatch):
     legacy_graph.add_node(3, x=121.00, y=31.00)
     legacy_graph.add_edge(1, 2, length=10.0, travel_time=1.0)
     legacy_graph.add_edge(2, 3, length=10.0, travel_time=1.0)
-    legacy_graph.graph["simplified"] = False
     called: dict[str, object] = {}
 
     def fake_load_graphml(path, ox):

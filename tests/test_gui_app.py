@@ -130,9 +130,6 @@ def test_gui_main_contains_required_chinese_labels():
         "平均速度",
         "拥堵路段",
         "重规划次数",
-        "地图节点数",
-        "路线折线点数",
-        "SNN算法耗时",
         "算法运行耗时对比",
         "调试信息 / 元数据 / 日志",
     ]:
@@ -182,7 +179,6 @@ def test_algorithm_comparison_rows_include_independent_benchmarks():
                     "label": "Dijkstra",
                     "success": True,
                     "runtime_sec": 0.01,
-                    "path_nodes": [0, 1, 2],
                     "path_node_count": 3,
                     "total_cost": 3.0,
                     "path_travel_time_s": 3.0,
@@ -191,7 +187,6 @@ def test_algorithm_comparison_rows_include_independent_benchmarks():
                     "label": "A*",
                     "success": True,
                     "runtime_sec": 0.008,
-                    "path_nodes": [0, 1, 2],
                     "path_node_count": 3,
                     "total_cost": 3.0,
                     "path_travel_time_s": 3.0,
@@ -203,10 +198,8 @@ def test_algorithm_comparison_rows_include_independent_benchmarks():
     rows = _algorithm_comparison_rows(result)
 
     assert [row["算法"] for row in rows] == ["SNN", "Dijkstra", "A*"]
-    assert rows[0]["算法计算耗时（秒）"] == 0.12
-    assert rows[1]["算法计算耗时（秒）"] == 0.01
-    assert rows[2]["算法计算耗时（秒）"] == 0.008
+    assert rows[0]["规划核心耗时（秒）"] == 0.12
+    assert rows[1]["规划核心耗时（秒）"] == 0.01
+    assert rows[2]["规划核心耗时（秒）"] == 0.008
     assert rows[0]["耗时口径"] == "SNN 规划核心"
     assert rows[1]["耗时口径"] == "隔离图快照完整重算"
-    assert rows[1]["路线关系"] == "与 SNN 相同"
-    assert rows[2]["路线关系"] == "与 SNN 相同"
