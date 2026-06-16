@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import random
 import time
+from dataclasses import replace
 
 import networkx as nx
 
@@ -26,8 +28,12 @@ from traffic import (
     IncidentGeneratorConfig,
     SimulationEngine,
     SimulationEngineConfig,
+    SerialNavigationComparison,
+    SerialRouteRun,
     TrafficSnapshot,
     Vehicle,
+    VehicleSimulatorConfig,
+    run_serial_planning_round,
 )
 
 # EdgePoints 是 GUI 层的道路几何缓存格式：
@@ -47,7 +53,10 @@ DRAW_BASE_ROADS = False
 MAX_BASE_ROAD_EDGES = 0
 MAX_TRAFFIC_EDGES = 80
 TRAFFIC_STEPS_PER_REFRESH = 1
-ROUTE_CONGESTION_INTERVAL_M = 5_000.0
+ROUTE_CONGESTION_TARGET_COUNT = 7
+MAX_ROUTE_CONGESTION_EVENTS = 10
+ROUTE_CONGESTION_LOOKAHEAD_M = 3_000.0
+NAVIGATION_SPEED_MPS = 8.3333333333
 TRAFFIC_DT_SECONDS = 20.0
 PLAYBACK_FRAME_SECONDS = 1.0
 ROUTE_COLORS = {
@@ -470,6 +479,12 @@ def _add_path_and_markers(
         icon=folium.Icon(color="purple", icon="flag"),
     ).add_to(fmap)
     if result is None or not result.path_nodes:
+        if car_point is not None:
+            folium.Marker(
+                car_point,
+                tooltip="车辆",
+                icon=folium.Icon(color="red", icon="car", prefix="fa"),
+            ).add_to(fmap)
         return
     points = path_nodes_to_latlon(graph, result.path_nodes)
     if len(points) >= 2:
@@ -583,6 +598,208 @@ def _add_comparison_route_overlays(
         ).add_to(fmap)
 
 
+def _navigation_result_from_serial_run(run) -> NavigationResult:
+    return NavigationResult(
+        start_node=int(run.path_nodes[0]) if run.path_nodes else -1,
+        goal_node=int(run.path_nodes[-1]) if run.path_nodes else -1,
+        path_nodes=[int(node) for node in run.path_nodes],
+        path_edges=[(int(u), int(v)) for u, v in run.path_edges],
+        wavefront_frames=[],
+        total_cost=None,
+        metadata={
+            "success": bool(run.success),
+            "error": run.error,
+            "backend": run.backend,
+            "loihi_error": getattr(run, "loihi_error", None),
+            "snn_runtime_sec": float(run.total_planning_runtime_sec) if run.algorithm == "snn" else 0.0,
+            "snn_runtime_scope": "当前行驶过程内 SNN 累计规划耗时；初始为完整 Brian2Loihi 规划，拥塞后为当前节点重发 spike",
+            "brian2loihi_simulator_runtime_sec": getattr(
+                run, "brian2loihi_simulator_runtime_sec", None
+            ),
+            "cpu_wavefront_runtime_sec": getattr(run, "cpu_wavefront_runtime_sec", None),
+            "final_wavefront_backend": getattr(run, "final_wavefront_backend", None) or run.backend,
+            "stdp_parent_trace_runtime_sec": float(getattr(run, "stdp_parent_trace_runtime_sec", 0.0)),
+            "path_reconstruction_runtime_sec": float(getattr(run, "path_reconstruction_runtime_sec", 0.0)),
+            "stdp_path_backtrace_runtime_sec": float(getattr(run, "stdp_path_backtrace_runtime_sec", 0.0)),
+            "path_length_m": float(run.path_length_m),
+            "path_travel_time_s": float(run.simulated_travel_time_s),
+        },
+    )
+
+
+def _serial_primary_result(comparison: SerialNavigationComparison | None) -> NavigationResult | None:
+    if comparison is None:
+        return None
+    for key in ("snn", "dijkstra", "astar"):
+        run = comparison.runs.get(key)
+        if run is not None and run.success and run.path_nodes:
+            return _navigation_result_from_serial_run(run)
+    return None
+
+
+def _sum_optional(left: object, right: object) -> float | None:
+    values = [value for value in (left, right) if value is not None]
+    if not values:
+        return None
+    return float(sum(float(value) for value in values))
+
+
+def _merge_serial_route_run(
+    previous: SerialRouteRun | None,
+    current: SerialRouteRun,
+    *,
+    is_reroute: bool,
+) -> SerialRouteRun:
+    """Merge one newly completed planning round into the cumulative UI counters."""
+    if previous is None:
+        if not is_reroute:
+            return current
+        return replace(
+            current,
+            initial_planning_runtime_sec=0.0,
+            reroute_planning_runtime_sec=float(current.total_planning_runtime_sec),
+            reroute_count=1 if current.success and current.path_nodes else 0,
+        )
+
+    return replace(
+        current,
+        total_planning_runtime_sec=(
+            float(previous.total_planning_runtime_sec) + float(current.total_planning_runtime_sec)
+        ),
+        initial_planning_runtime_sec=float(previous.initial_planning_runtime_sec),
+        reroute_planning_runtime_sec=(
+            float(previous.reroute_planning_runtime_sec) + float(current.total_planning_runtime_sec)
+        ),
+        planning_event_count=int(previous.planning_event_count) + int(current.planning_event_count),
+        reroute_count=int(previous.reroute_count) + (1 if current.success and current.path_nodes else 0),
+        brian2loihi_simulator_runtime_sec=_sum_optional(
+            previous.brian2loihi_simulator_runtime_sec,
+            current.brian2loihi_simulator_runtime_sec,
+        ),
+        cpu_wavefront_runtime_sec=_sum_optional(
+            previous.cpu_wavefront_runtime_sec,
+            current.cpu_wavefront_runtime_sec,
+        ),
+        stdp_parent_trace_runtime_sec=(
+            float(previous.stdp_parent_trace_runtime_sec) + float(current.stdp_parent_trace_runtime_sec)
+        ),
+        path_reconstruction_runtime_sec=(
+            float(previous.path_reconstruction_runtime_sec) + float(current.path_reconstruction_runtime_sec)
+        ),
+        stdp_path_backtrace_runtime_sec=(
+            float(previous.stdp_path_backtrace_runtime_sec) + float(current.stdp_path_backtrace_runtime_sec)
+        ),
+        error=current.error,
+        loihi_error=current.loihi_error or previous.loihi_error,
+        final_wavefront_backend=current.final_wavefront_backend or previous.final_wavefront_backend,
+    )
+
+
+def _merge_serial_comparisons(
+    previous: SerialNavigationComparison | None,
+    current: SerialNavigationComparison,
+    *,
+    is_reroute: bool,
+) -> SerialNavigationComparison:
+    if previous is None:
+        if not is_reroute:
+            return current
+        previous_runs: dict[str, SerialRouteRun] = {}
+        previous_schedule = []
+        previous_runtime = 0.0
+    else:
+        previous_runs = previous.runs
+        previous_schedule = previous.congestion_schedule
+        previous_runtime = previous.runtime_sec
+
+    runs = {
+        key: _merge_serial_route_run(previous_runs.get(key), run, is_reroute=is_reroute)
+        for key, run in current.runs.items()
+    }
+    return SerialNavigationComparison(
+        start_node=int(previous.start_node if previous is not None else current.start_node),
+        goal_node=int(previous.goal_node if previous is not None else current.goal_node),
+        congestion_schedule=[*previous_schedule, *current.congestion_schedule],
+        runs=runs,
+        runtime_sec=float(previous_runtime) + float(current.runtime_sec),
+    )
+
+
+def _add_serial_route_overlays(
+    folium,
+    fmap,
+    graph: nx.DiGraph,
+    comparison: SerialNavigationComparison | None,
+) -> None:
+    if comparison is None:
+        return
+    styles = {
+        "snn": {"weight": 6, "opacity": 0.95, "dash_array": None},
+        "dijkstra": {"weight": 5, "opacity": 0.78, "dash_array": "10,7"},
+        "astar": {"weight": 4, "opacity": 0.9, "dash_array": "2,7"},
+    }
+    for key in ("snn", "dijkstra", "astar"):
+        run = comparison.runs.get(key)
+        if run is None or len(run.path_nodes) < 2:
+            continue
+        points = path_nodes_to_latlon(graph, run.path_nodes)
+        if len(points) < 2:
+            continue
+        style = styles[key]
+        folium.PolyLine(
+            points,
+            color=ROUTE_COLORS[key],
+            weight=int(style["weight"]),
+            opacity=float(style["opacity"]),
+            dash_array=style["dash_array"],
+            tooltip=f"{run.label} 全程轨迹",
+        ).add_to(fmap)
+
+
+def _edge_midpoint(points: list[tuple[float, float]]) -> tuple[float, float] | None:
+    if not points:
+        return None
+    return points[len(points) // 2]
+
+
+def _add_serial_congestion_markers(
+    folium,
+    fmap,
+    graph: nx.DiGraph,
+    edge_lookup: EdgePointLookup,
+    comparison: SerialNavigationComparison | None,
+) -> None:
+    if comparison is None:
+        return
+    for item in comparison.congestion_schedule:
+        for u, v in item.affected_edges:
+            points = _points_for_edge(edge_lookup, graph, int(u), int(v))
+            if len(points) >= 2:
+                folium.PolyLine(
+                    points,
+                    color="#7f1d1d",
+                    weight=7,
+                    opacity=0.88,
+                    dash_array="4,6",
+                    tooltip=f"{item.event_id}: 拥塞路段 {u}->{v}",
+                ).add_to(fmap)
+            midpoint = _edge_midpoint(points)
+            if midpoint is None:
+                continue
+            folium.CircleMarker(
+                location=midpoint,
+                radius=6,
+                color="#991b1b",
+                fill=True,
+                fill_opacity=0.9,
+                weight=2,
+                tooltip=(
+                    f"{item.event_id}: 发生约 {item.distance_m / 1000:.2f} km，"
+                    f"提前 {max(0.0, item.distance_m - item.detection_distance_m) / 1000:.1f} km 预知"
+                ),
+            ).add_to(fmap)
+
+
 def _route_relation(path_nodes: list[int], known_paths: list[tuple[str, tuple[int, ...]]]) -> str:
     if len(path_nodes) < 2:
         return "无可用路线"
@@ -593,10 +810,63 @@ def _route_relation(path_nodes: list[int], known_paths: list[tuple[str, tuple[in
     return "单独路线"
 
 
-def _default_points(graph: nx.DiGraph) -> tuple[float, float, float, float]:
-    # 默认起点/终点输入框使用图的西北角和东南角，确保初始值落在地图范围内。
-    north, south, east, west = _graph_bounds(graph)
-    return north, west, south, east
+def _fallback_default_points(bbox: BoundingBox = HANGZHOU_BBOX) -> tuple[float, float, float, float]:
+    # 默认起点/终点必须落在固定杭州 bbox 内，不能直接使用缓存图边界：
+    # OSMnx 可能保留边界外少量道路节点，旧缓存也可能比当前 bbox 更大。
+    lat_margin = (float(bbox.north) - float(bbox.south)) * 0.08
+    lon_margin = (float(bbox.east) - float(bbox.west)) * 0.08
+    return (
+        float(bbox.north) - lat_margin,
+        float(bbox.west) + lon_margin,
+        float(bbox.south) + lat_margin,
+        float(bbox.east) - lon_margin,
+    )
+
+
+def _default_points(
+    graph: nx.DiGraph,
+    bbox: BoundingBox = HANGZHOU_BBOX,
+    *,
+    rng: random.Random | None = None,
+) -> tuple[float, float, float, float]:
+    if graph.number_of_nodes() == 0:
+        return _fallback_default_points(bbox)
+    try:
+        largest_component = max(nx.weakly_connected_components(graph), key=len)
+    except ValueError:
+        return _fallback_default_points(bbox)
+    candidates: list[tuple[int, float, float]] = []
+    for node in largest_component:
+        attrs = graph.nodes[node]
+        try:
+            lat = float(attrs["lat"])
+            lon = float(attrs["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if _coordinate_in_bbox(lat, lon, bbox):
+            candidates.append((int(node), lat, lon))
+    if len(candidates) < 2:
+        return _fallback_default_points(bbox)
+    generator = rng or random.Random()
+    candidate_by_node = {int(node): (float(lat), float(lon)) for node, lat, lon in candidates}
+    nodes = list(candidate_by_node)
+    max_attempts = min(500, max(20, len(nodes) * 2))
+    for _attempt in range(max_attempts):
+        start_node, goal_node = generator.sample(nodes, 2)
+        if nx.has_path(graph, int(start_node), int(goal_node)):
+            start_lat, start_lon = candidate_by_node[int(start_node)]
+            goal_lat, goal_lon = candidate_by_node[int(goal_node)]
+            return start_lat, start_lon, goal_lat, goal_lon
+
+    for start_node in nodes:
+        for goal_node in nodes:
+            if int(start_node) == int(goal_node):
+                continue
+            if nx.has_path(graph, int(start_node), int(goal_node)):
+                start_lat, start_lon = candidate_by_node[int(start_node)]
+                goal_lat, goal_lon = candidate_by_node[int(goal_node)]
+                return start_lat, start_lon, goal_lat, goal_lon
+    return _fallback_default_points(bbox)
 
 
 def _metric_float(result: NavigationResult | None, key: str) -> float:
@@ -673,6 +943,54 @@ def _algorithm_comparison_rows(result: NavigationResult | None) -> list[dict[str
     return rows
 
 
+def _serial_comparison_rows(comparison: SerialNavigationComparison | None) -> list[dict[str, object]]:
+    if comparison is None:
+        return []
+    rows: list[dict[str, object]] = []
+    known_paths: list[tuple[str, tuple[int, ...]]] = []
+    for key in ("snn", "dijkstra", "astar"):
+        run = comparison.runs.get(key)
+        if run is None:
+            continue
+        relation = _route_relation(run.path_nodes, known_paths)
+        rows.append(
+            {
+                "算法": run.label,
+                "总规划耗时（秒）": round(float(run.total_planning_runtime_sec), 6),
+                "初始规划耗时（秒）": round(float(run.initial_planning_runtime_sec), 6),
+                "拥塞后重规划耗时（秒）": round(float(run.reroute_planning_runtime_sec), 6),
+                "规划次数": int(run.planning_event_count),
+                "重规划次数": int(run.reroute_count),
+                "耗时口径": (
+                    "Brian2Loihi wavefront + STDP 回溯；拥塞后从当前节点重发 spike"
+                    if key == "snn"
+                    else "当前隔离图快照上的完整路线规划；遇到拥塞后从头重算"
+                ),
+                "路线关系": relation,
+                "状态": "成功" if run.success else f"失败：{run.error or ''}",
+                "路径节点数": len(run.path_nodes),
+                "路径长度（m）": round(float(run.path_length_m), 1),
+            }
+        )
+        if run.path_nodes:
+            known_paths.append((run.label, tuple(int(node) for node in run.path_nodes)))
+    return rows
+
+
+def _serial_congestion_rows(comparison: SerialNavigationComparison | None) -> list[dict[str, object]]:
+    if comparison is None:
+        return []
+    return [
+        {
+            "拥塞事件": item.event_id,
+            "发生位置（km）": round(float(item.distance_m) / 1000.0, 3),
+            "可预知位置（km）": round(float(item.detection_distance_m) / 1000.0, 3),
+            "影响路段": ", ".join(f"{u}->{v}" for u, v in item.affected_edges),
+        }
+        for item in comparison.congestion_schedule
+    ]
+
+
 def _runtime_metric_rows(
     result: NavigationResult | None,
     map_load_metrics: dict[str, object] | None,
@@ -727,14 +1045,24 @@ def _runtime_metric_rows(
                 "指标": "Brian2Loihi 仿真器用时",
                 "耗时（秒）": _optional_seconds(metadata.get("brian2loihi_simulator_runtime_sec")),
                 "计时范围": "run_wavefront(use_loihi=True) 的实际调用耗时；不可用时为空或为失败检测耗时",
-                "状态": "失败后降级"
-                if metadata.get("loihi_error")
-                else ("已使用" if metadata.get("brian2loihi_simulator_runtime_sec") is not None else "本次未使用"),
+                "状态": (
+                    "失败（未使用 CPU 兜底）"
+                    if metadata.get("loihi_error") and metadata.get("cpu_wavefront_runtime_sec") is None
+                    else (
+                        "失败后降级"
+                        if metadata.get("loihi_error")
+                        else (
+                            "已使用"
+                            if metadata.get("brian2loihi_simulator_runtime_sec") is not None
+                            else "本次未使用"
+                        )
+                    )
+                ),
             },
             {
                 "指标": "CPU wavefront / fallback 用时",
                 "耗时（秒）": _optional_seconds(metadata.get("cpu_wavefront_runtime_sec")),
-                "计时范围": "CPU reference wavefront 或增量 pulse",
+                "计时范围": "CPU reference wavefront；Web 严格 SNN 对比中应为空",
                 "状态": str(metadata.get("final_wavefront_backend") or metadata.get("backend") or ""),
             },
             {
@@ -763,6 +1091,8 @@ def _runtime_metric_rows(
         for key in ("dijkstra", "astar"):
             payload = benchmarks.get(key) or {}
             if not isinstance(payload, dict):
+                continue
+            if "runtime_sec" not in payload and "success" not in payload:
                 continue
             rows.append(
                 {
@@ -814,13 +1144,20 @@ def _simulation_config() -> SimulationEngineConfig:
             incident_probability_per_minute=0.0,
             random_seed=8,
         ),
+        vehicle_simulator=VehicleSimulatorConfig(
+            navigation_speed_mps=NAVIGATION_SPEED_MPS,
+        ),
         router=DynamicRouterConfig(
             reroute_check_interval=0.0,
             min_reroute_interval=0.0,
+            eta_improvement_threshold=0.0,
             congestion_threshold=0.8,
+            lookahead_distance=ROUTE_CONGESTION_LOOKAHEAD_M,
         ),
-        route_congestion_interval_m=ROUTE_CONGESTION_INTERVAL_M,
-        route_congestion_edge_count=2,
+        route_congestion_target_count=ROUTE_CONGESTION_TARGET_COUNT,
+        max_route_congestion_events=MAX_ROUTE_CONGESTION_EVENTS,
+        route_congestion_edge_count=1,
+        route_congestion_lookahead_m=ROUTE_CONGESTION_LOOKAHEAD_M,
         route_congestion_duration_seconds=900.0,
         route_congestion_capacity_multiplier=0.01,
         route_congestion_speed_multiplier=0.01,
@@ -836,6 +1173,18 @@ def _planning_graph(
     if not use_dynamic_graph or engine is None:
         return base_graph
     return engine.graph
+
+
+def _route_component_view(graph: nx.DiGraph, start_node: int, goal_node: int) -> nx.DiGraph:
+    if start_node not in graph or goal_node not in graph:
+        return graph
+    try:
+        component = nx.node_connected_component(graph.to_undirected(as_view=True), int(start_node))
+    except (KeyError, nx.NetworkXError):
+        return graph
+    if int(goal_node) not in component:
+        return graph
+    return graph.subgraph(component)
 
 
 def _load_hangzhou_graph_cached(st):
@@ -879,12 +1228,12 @@ def main() -> None:
 
         st.header("模拟交通")
         st.caption(
-            f"车辆每行驶约 {ROUTE_CONGESTION_INTERVAL_M / 1000:.1f} km，"
-            "前方路线随机出现局部拥塞。"
+            f"点击开始后，行驶途中最多出现 {MAX_ROUTE_CONGESTION_EVENTS} 个封路拥塞事件；"
+            f"车辆可提前约 {ROUTE_CONGESTION_LOOKAHEAD_M / 1000:.1f} km 预知并避让。"
         )
         st.caption(
-            "拥塞路段会关闭对应突触和下游神经元；SNN 从当前车辆节点增量发放脉冲，"
-            "Dijkstra/A* 使用隔离图快照完整重算。"
+            "拥塞路段会作为封路障碍关闭对应突触，并标记下游节点用于地图显示；SNN 只允许 Brian2Loihi 重新发放脉冲，"
+            "Dijkstra/A* 使用隔离图快照完整重算。导航车辆巡航速度约 30 km/h。"
         )
 
     if load_clicked:
@@ -900,6 +1249,7 @@ def main() -> None:
                 geometry_started = time.perf_counter()
                 st.session_state.road_edge_points = _build_edge_points(st.session_state.road_graph)
                 st.session_state.edge_point_lookup = _edge_point_lookup(st.session_state.road_edge_points)
+                st.session_state.default_route_points = _default_points(st.session_state.road_graph)
                 geometry_runtime_sec = time.perf_counter() - geometry_started
                 st.session_state.map_load_metrics = {
                     "total_runtime_sec": float(time.perf_counter() - map_load_started),
@@ -911,6 +1261,7 @@ def main() -> None:
 
                 # 新地图意味着旧路线和旧交通状态都不再适用，必须清空。
                 st.session_state.navigation_result = None
+                st.session_state.serial_comparison = None
                 st.session_state.traffic_engine = None
                 st.session_state.traffic_snapshot = None
                 st.session_state.traffic_step_result = None
@@ -949,7 +1300,11 @@ def main() -> None:
         traffic_engine is not None or bool(st.session_state.get("simulation_started")),
         traffic_engine,
     )
-    default_start_lat, default_start_lon, default_goal_lat, default_goal_lon = _default_points(base_graph)
+    default_route_points = st.session_state.get("default_route_points")
+    if default_route_points is None:
+        default_route_points = _default_points(base_graph)
+        st.session_state.default_route_points = default_route_points
+    default_start_lat, default_start_lon, default_goal_lat, default_goal_lon = default_route_points
 
     # 起终点输入仍使用经纬度。真正用于 SNN 的是 snap 后的 node id。
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -971,15 +1326,146 @@ def main() -> None:
     # 规划和可达性检查则用当前 graph，让交通阻塞影响路径结果。
     start_node = nearest_node_by_latlon(base_graph, float(start_lat), float(start_lon))
     goal_node = nearest_node_by_latlon(base_graph, float(goal_lat), float(goal_lon))
+    if st.session_state.get("serial_comparison") is not None and (
+        st.session_state.get("last_start_node") != int(start_node)
+        or st.session_state.get("last_goal_node") != int(goal_node)
+    ):
+        st.session_state.serial_comparison = None
+        st.session_state.navigation_result = None
     path_exists, reachability_message = _reachability_status(graph, start_node, goal_node)
+    serial_progress_slot = st.empty()
+
+    def _render_serial_progress(
+        comparison: SerialNavigationComparison,
+        *,
+        display_graph: nx.DiGraph,
+        message: str,
+    ) -> None:
+        completed = "、".join(
+            comparison.runs[key].label for key in ("snn", "dijkstra", "astar") if key in comparison.runs
+        )
+        progress_map = folium.Map(
+            location=_graph_center(display_graph),
+            zoom_start=13,
+            tiles=FOLIUM_TILE_NAME,
+            prefer_canvas=True,
+            control_scale=False,
+            zoom_control=False,
+            dragging=False,
+            scrollWheelZoom=False,
+            doubleClickZoom=False,
+            boxZoom=False,
+            touchZoom=False,
+            keyboard=False,
+        )
+        _add_path_and_markers(folium, progress_map, display_graph, None, start_node, goal_node, 0)
+        _add_serial_route_overlays(folium, progress_map, display_graph, comparison)
+        primary = _serial_primary_result(comparison)
+        progress_points = path_nodes_to_latlon(display_graph, primary.path_nodes) if primary else []
+        _fit_map_bounds(progress_map, display_graph, progress_points)
+        with serial_progress_slot.container():
+            st.caption(f"{message}：已完成 {completed}")
+            st_folium(
+                progress_map,
+                width=None,
+                height=360,
+                returned_objects=[],
+                key=f"serial_progress_{len(comparison.runs)}_{int(time.time() * 1000)}",
+            )
 
     def _full_snn_route_planner(route_graph: nx.DiGraph, source: int, target: int) -> NavigationResult:
-        # 初始路线固定走 Brian2Loihi；后端不可用时 run_navigation 会按原逻辑降级。
-        return run_navigation(route_graph, source, target, use_loihi=USE_LOIHI_BACKEND)
+        # 初始路线固定走 Brian2Loihi；Web 对比场景不允许 CPU wavefront fallback。
+        return run_navigation(
+            _route_component_view(route_graph, int(source), int(target)),
+            source,
+            target,
+            use_loihi=USE_LOIHI_BACKEND,
+            allow_cpu_fallback=False,
+            benchmark_algorithms=None,
+            include_wavefront_frames=False,
+            include_spike_times_metadata=False,
+        )
 
     def _incremental_snn_route_planner(route_graph: nx.DiGraph, source: int, target: int) -> NavigationResult:
         # 拥塞后的重规划复用已构建的图/SNN 映射，只从当前节点重新发放脉冲。
-        return run_incremental_snn_navigation(route_graph, source, target)
+        return run_incremental_snn_navigation(
+            route_graph,
+            source,
+            target,
+            use_loihi=True,
+            allow_cpu_fallback=False,
+            benchmark_algorithms=None,
+            include_spike_times_metadata=False,
+        )
+
+    def _serial_route_result_for_vehicle(
+        comparison: SerialNavigationComparison | None,
+    ) -> NavigationResult | None:
+        # 正常 Brian2Loihi 环境下优先使用 SNN 路线；本机缺少后端时退到首个可用路线，
+        # 保证网页仍能验证车辆位置和动态封路流程，且 SNN 不做 CPU wavefront 兜底。
+        if comparison is None:
+            return None
+        snn_run = comparison.runs.get("snn")
+        if snn_run is not None and snn_run.success and snn_run.path_nodes:
+            return _navigation_result_from_serial_run(snn_run)
+        return _serial_primary_result(comparison)
+
+    def _serial_initial_route_planner(route_graph: nx.DiGraph, source: int, target: int) -> NavigationResult:
+        comparison = run_serial_planning_round(
+            _route_component_view(route_graph, int(source), int(target)),
+            int(source),
+            int(target),
+            snn_is_initial=True,
+            average_speed_mps=NAVIGATION_SPEED_MPS,
+            allow_snn_cpu_fallback=False,
+            on_algorithm_result=lambda comparison: _render_serial_progress(
+                comparison,
+                display_graph=_route_component_view(route_graph, int(source), int(target)),
+                message="无拥塞串行规划",
+            ),
+        )
+        st.session_state.serial_comparison = _merge_serial_comparisons(None, comparison, is_reroute=False)
+        result = _serial_route_result_for_vehicle(comparison)
+        if result is not None:
+            return result
+        return NavigationResult(
+            start_node=int(source),
+            goal_node=int(target),
+            path_nodes=[],
+            path_edges=[],
+            metadata={"success": False, "error": "三种算法均未找到可行路线。"},
+        )
+
+    def _serial_reroute_route_planner(route_graph: nx.DiGraph, source: int, target: int) -> NavigationResult:
+        comparison = run_serial_planning_round(
+            _route_component_view(route_graph, int(source), int(target)),
+            int(source),
+            int(target),
+            snn_is_initial=False,
+            average_speed_mps=NAVIGATION_SPEED_MPS,
+            allow_snn_cpu_fallback=False,
+            on_algorithm_result=lambda comparison: _render_serial_progress(
+                comparison,
+                display_graph=_route_component_view(route_graph, int(source), int(target)),
+                message="封路后串行重规划",
+            ),
+        )
+        st.session_state.serial_comparison = _merge_serial_comparisons(
+            st.session_state.get("serial_comparison"),
+            comparison,
+            is_reroute=True,
+        )
+        st.session_state.last_reroute_serial_comparison = comparison
+        result = _serial_route_result_for_vehicle(comparison)
+        if result is not None:
+            return result
+        return NavigationResult(
+            start_node=int(source),
+            goal_node=int(target),
+            path_nodes=[],
+            path_edges=[],
+            metadata={"success": False, "error": "封路后无可行绕行路线。"},
+        )
 
     # 主要动作：
     # 1. 运行 SNN 导航：生成当前路线和 wavefront；
@@ -993,7 +1479,7 @@ def main() -> None:
 
     if run_clicked:
         try:
-            with st.spinner("正在运行 SNN 波前导航..."):
+            with st.spinner("正在无拥塞状态下串行运行 SNN、Dijkstra、A* 导航..."):
                 _reset_playback_state(st.session_state)
                 st.session_state.last_start_node = int(start_node)
                 st.session_state.last_goal_node = int(goal_node)
@@ -1003,10 +1489,31 @@ def main() -> None:
                 st.session_state.traffic_snapshot = None
                 st.session_state.traffic_step_result = None
                 st.session_state.traffic_step = 0
-                # 初始路线使用 Brian2Loihi/CPU fallback 的完整 SNN wavefront。
-                st.session_state.navigation_result = _full_snn_route_planner(graph, start_node, goal_node)
+                st.session_state.last_reroute_serial_comparison = None
+                comparison_graph = _route_component_view(base_graph, start_node, goal_node)
+                planning_round = run_serial_planning_round(
+                    comparison_graph,
+                    start_node,
+                    goal_node,
+                    snn_is_initial=True,
+                    average_speed_mps=NAVIGATION_SPEED_MPS,
+                    allow_snn_cpu_fallback=False,
+                    on_algorithm_result=lambda comparison: _render_serial_progress(
+                        comparison,
+                        display_graph=comparison_graph,
+                        message="无拥塞串行规划",
+                    ),
+                )
+                st.session_state.serial_comparison = _merge_serial_comparisons(
+                    None,
+                    planning_round,
+                    is_reroute=False,
+                )
+                st.session_state.navigation_result = _serial_route_result_for_vehicle(
+                    planning_round
+                )
         except Exception as exc:
-            st.error(f"运行 SNN 导航失败：{exc}")
+            st.error(f"运行三算法串行导航对比失败：{exc}")
 
     result_for_start: NavigationResult | None = st.session_state.get("navigation_result")
     if start_clicked:
@@ -1017,23 +1524,41 @@ def main() -> None:
         else:
             try:
                 if traffic_engine is None:
-                    traffic_engine = SimulationEngine(base_graph, config=sim_config)
-                    st.session_state.traffic_engine = traffic_engine
-                    st.session_state.navigation_result = traffic_engine.start_navigation(
-                        start_node,
-                        goal_node,
-                        route_planner=_full_snn_route_planner,
+                    traffic_engine = SimulationEngine(
+                        _route_component_view(base_graph, start_node, goal_node),
+                        config=sim_config,
                     )
-                else:
-                    traffic_engine.update_config(sim_config)
-                    if traffic_engine.navigation_vehicle is None or traffic_engine.navigation_vehicle.arrived:
+                    st.session_state.traffic_engine = traffic_engine
+                    if (
+                        int(result_for_start.start_node) == int(start_node)
+                        and int(result_for_start.goal_node) == int(goal_node)
+                    ):
+                        st.session_state.navigation_result = traffic_engine.start_navigation_from_result(
+                            result_for_start
+                        )
+                    else:
                         st.session_state.navigation_result = traffic_engine.start_navigation(
                             start_node,
                             goal_node,
-                            route_planner=_full_snn_route_planner,
+                            route_planner=_serial_initial_route_planner,
                         )
-                # 恢复行驶时立即基于当前 graph edge 状态检查是否重规划。
-                traffic_engine.check_navigation_reroute(route_planner=_incremental_snn_route_planner, force=True)
+                else:
+                    traffic_engine.update_config(sim_config)
+                    if traffic_engine.navigation_vehicle is None or traffic_engine.navigation_vehicle.arrived:
+                        if start_node not in traffic_engine.graph or goal_node not in traffic_engine.graph:
+                            traffic_engine = SimulationEngine(
+                                _route_component_view(base_graph, start_node, goal_node),
+                                config=sim_config,
+                            )
+                            st.session_state.traffic_engine = traffic_engine
+                        st.session_state.navigation_result = traffic_engine.start_navigation(
+                            start_node,
+                            goal_node,
+                            route_planner=_serial_initial_route_planner,
+                        )
+                # 恢复行驶时，如果当前已有拥塞，再立即检查一次重规划；首次开始无拥塞时不白跑规划。
+                if traffic_engine.incident_generator.active_incidents(traffic_engine.current_time):
+                    traffic_engine.check_navigation_reroute(route_planner=_serial_reroute_route_planner, force=True)
                 st.session_state.navigation_result = traffic_engine.navigation_result or st.session_state.navigation_result
                 traffic_snapshot = traffic_engine.current_snapshot()
                 st.session_state.traffic_snapshot = traffic_snapshot
@@ -1047,6 +1572,10 @@ def main() -> None:
         st.warning("导航已暂停。")
 
     if end_clicked:
+        if traffic_engine is not None:
+            traffic_engine.clear_route_congestion()
+            traffic_snapshot = traffic_engine.current_snapshot()
+            st.session_state.traffic_snapshot = traffic_snapshot
         _finish_playback_state(st.session_state, "导航已结束")
         st.info("导航已结束。")
 
@@ -1054,7 +1583,7 @@ def main() -> None:
         traffic_engine.update_config(sim_config)
         step_result = None
         for _ in range(TRAFFIC_STEPS_PER_REFRESH):
-            step_result = traffic_engine.step(route_planner=_incremental_snn_route_planner)
+            step_result = traffic_engine.step(route_planner=_serial_reroute_route_planner)
         st.session_state.traffic_step_result = step_result
         st.session_state.traffic_step = int(st.session_state.get("traffic_step", 0)) + TRAFFIC_STEPS_PER_REFRESH
         st.session_state.navigation_result = traffic_engine.navigation_result
@@ -1062,6 +1591,9 @@ def main() -> None:
         traffic_snapshot = traffic_engine.current_snapshot()
         st.session_state.traffic_snapshot = traffic_snapshot
         if traffic_engine.navigation_vehicle is not None and traffic_engine.navigation_vehicle.arrived:
+            traffic_engine.clear_route_congestion()
+            traffic_snapshot = traffic_engine.current_snapshot()
+            st.session_state.traffic_snapshot = traffic_snapshot
             _finish_playback_state(st.session_state, "车辆已到达终点")
             st.success("车辆已到达终点。")
 
@@ -1082,7 +1614,13 @@ def main() -> None:
         st.warning(f"{reachability_message} 目标神经元不会在该有向路线中发放。")
 
     result: NavigationResult | None = st.session_state.get("navigation_result")
-    if result is not None:
+    serial_comparison: SerialNavigationComparison | None = st.session_state.get("serial_comparison")
+    if serial_comparison is not None:
+        if traffic_engine is not None and traffic_engine.last_reroute_decision is not None:
+            st.success("封路后已完成三算法串行重规划。")
+        else:
+            st.success("无拥塞状态下的三算法串行规划已完成。")
+    elif result is not None:
         if result.metadata.get("success"):
             st.success("导航成功。")
         else:
@@ -1097,7 +1635,8 @@ def main() -> None:
             st.info(status_message)
 
     # path_points 是最终路径的折线坐标，用于地图缩放。
-    path_points = path_nodes_to_latlon(graph, result.path_nodes) if result else []
+    map_primary_result = _serial_primary_result(serial_comparison) if serial_comparison is not None else result
+    path_points = path_nodes_to_latlon(graph, map_primary_result.path_nodes) if map_primary_result else []
     simulation_vehicle = traffic_engine.navigation_vehicle if traffic_engine is not None else None
     actual_car_point = _vehicle_position_latlon(graph, edge_lookup, simulation_vehicle)
     car_index = 0
@@ -1134,8 +1673,13 @@ def main() -> None:
     if traffic_engine is not None:
         _add_previous_route_overlay(folium, fmap, graph, traffic_engine.previous_navigation_route)
     # 最终路径和起终点 marker 放到最上层，保证用户容易识别当前路线。
-    _add_path_and_markers(folium, fmap, graph, result, start_node, goal_node, car_index, actual_car_point)
-    _add_comparison_route_overlays(folium, fmap, graph, result)
+    if serial_comparison is not None:
+        _add_path_and_markers(folium, fmap, graph, None, start_node, goal_node, car_index, actual_car_point)
+        _add_serial_congestion_markers(folium, fmap, graph, edge_lookup, serial_comparison)
+        _add_serial_route_overlays(folium, fmap, graph, serial_comparison)
+    else:
+        _add_path_and_markers(folium, fmap, graph, result, start_node, goal_node, car_index, actual_car_point)
+        _add_comparison_route_overlays(folium, fmap, graph, result)
     _fit_map_bounds(fmap, graph, path_points)
 
     # returned_objects=[] 避免 Streamlit-Folium 把地图点击/缩放状态大量回传，
@@ -1159,15 +1703,26 @@ def main() -> None:
         "预计通行时间",
         f"{_metric_float(result, 'path_travel_time_s'):.1f} s",
     )
+    snn_runtime_value = _metric_float(result, "snn_runtime_sec")
+    snn_scope = result.metadata.get("snn_runtime_scope", "未记录") if result is not None else "未记录"
+    if serial_comparison is not None and serial_comparison.runs.get("snn") is not None:
+        snn_run_for_metric = serial_comparison.runs["snn"]
+        snn_runtime_value = float(snn_run_for_metric.total_planning_runtime_sec)
+        snn_scope = "当前行驶过程内 SNN 累计规划耗时；初始完整规划，拥塞后从当前节点重发 spike"
     route_cols[4].metric(
         "SNN算法耗时",
-        f"{_metric_float(result, 'snn_runtime_sec'):.6f} s",
+        f"{snn_runtime_value:.6f} s",
     )
-    comparison_rows = _algorithm_comparison_rows(result)
+    if result is not None:
+        st.caption(f"SNN耗时口径：{snn_scope}")
+    comparison_rows = _serial_comparison_rows(serial_comparison) if serial_comparison else _algorithm_comparison_rows(result)
     if comparison_rows:
         st.subheader("算法运行耗时对比")
         st.table(comparison_rows)
-    timing_rows = _runtime_metric_rows(result, st.session_state.get("map_load_metrics"))
+    timing_result = result
+    if serial_comparison is not None and serial_comparison.runs.get("snn") is not None:
+        timing_result = _navigation_result_from_serial_run(serial_comparison.runs["snn"])
+    timing_rows = _runtime_metric_rows(timing_result, st.session_state.get("map_load_metrics"))
     if timing_rows:
         st.subheader("详细耗时指标")
         st.table(timing_rows)
@@ -1178,9 +1733,16 @@ def main() -> None:
         traffic_cols = st.columns(5)
         traffic_cols[0].metric("仿真时间", f"{traffic_engine.current_time:.1f} s")
         traffic_cols[1].metric("车辆数", str(len(traffic_engine.vehicles)))
+        nav_vehicle = traffic_engine.navigation_vehicle
+        nav_average_speed = (
+            float(nav_vehicle.total_distance)
+            / max(1.0e-9, float(traffic_engine.current_time) - float(nav_vehicle.departure_time))
+            if nav_vehicle is not None and traffic_engine.current_time > nav_vehicle.departure_time
+            else float(metrics.average_network_speed)
+        )
         traffic_cols[2].metric(
             "平均速度",
-            f"{metrics.average_network_speed:.1f} m/s",
+            f"{nav_average_speed:.1f} m/s",
         )
         traffic_cols[3].metric(
             "拥堵路段",

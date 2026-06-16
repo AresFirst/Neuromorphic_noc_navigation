@@ -222,6 +222,7 @@ def _run_single_benchmark(
             total_cost=_path_cost(planning_graph, path_nodes, cost_attr),
             path_length_m=_path_attr_sum(planning_graph, path_nodes, "length"),
             path_travel_time_s=_path_attr_sum(planning_graph, path_nodes, "travel_time"),
+            runtime_scope="隔离图快照上的完整路径重算" if copy_graph else "当前图只读视图上的完整路径重算",
         )
     except Exception as exc:
         runtime_sec = time.perf_counter() - started
@@ -267,3 +268,31 @@ def run_algorithm_benchmarks(
         )
         results[str(algorithm)] = result.to_dict()
     return results
+
+
+def run_single_algorithm_benchmark(
+    graph: nx.DiGraph,
+    start_node: int,
+    goal_node: int,
+    *,
+    cost_attr: str = "cost",
+    algorithm: str,
+    copy_graph: bool = False,
+) -> AlgorithmBenchmarkResult:
+    """Run one classical path algorithm in isolation."""
+    if algorithm not in ALGORITHMS:
+        return AlgorithmBenchmarkResult(
+            algorithm=str(algorithm),
+            label=str(algorithm),
+            success=False,
+            runtime_sec=0.0,
+            error=f"Unknown benchmark algorithm: {algorithm}",
+        )
+    return _run_single_benchmark(
+        graph,
+        int(start_node),
+        int(goal_node),
+        cost_attr=cost_attr,
+        algorithm=str(algorithm),
+        copy_graph=bool(copy_graph),
+    )

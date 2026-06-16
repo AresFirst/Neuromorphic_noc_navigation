@@ -65,6 +65,23 @@ def test_snn_parent_trace_tie_breaks_by_real_route_cost():
     assert result.total_cost == 2.0
 
 
+def test_navigation_can_skip_heavy_wavefront_visualization_payload():
+    result = run_navigation(
+        _toy_graph(),
+        0,
+        2,
+        use_loihi=False,
+        include_wavefront_frames=False,
+        include_spike_times_metadata=False,
+    )
+
+    assert result.path_nodes == [0, 1, 2]
+    assert result.wavefront_frames == []
+    assert result.metadata["spike_times_by_node"] == {}
+    assert result.metadata["num_spikes"] == 3
+    assert result.metadata["wavefront_time_max_ms"] == 3
+
+
 def test_classical_benchmarks_skip_blocked_edges_without_snn_state():
     # Dijkstra/A* 只读取当前图和权重属性；不会复用 SNN spike 或 parent trace。
     graph = _toy_graph()
@@ -160,6 +177,30 @@ def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):
     assert result.metadata["cpu_wavefront_runtime_sec"] is not None
     assert result.metadata["final_wavefront_backend"] == "cpu_reference"
     assert result.metadata["stdp_path_backtrace_runtime_sec"] >= 0.0
+
+
+def test_navigation_strict_loihi_does_not_fall_back_to_cpu(monkeypatch):
+    calls: list[bool] = []
+
+    def fake_run_wavefront(_graph, _start_node, _goal_node, *, use_loihi, **_kwargs):
+        calls.append(bool(use_loihi))
+        return {
+            "backend": "unavailable",
+            "success": False,
+            "error": "backend missing",
+            "spike_times_by_neuron": {},
+        }
+
+    monkeypatch.setattr("navigation.planner.run_wavefront", fake_run_wavefront)
+
+    result = run_navigation(_toy_graph(), 0, 2, use_loihi=True, allow_cpu_fallback=False)
+
+    assert calls == [True]
+    assert result.path_nodes == []
+    assert result.metadata["success"] is False
+    assert result.metadata["loihi_error"] == "backend missing"
+    assert result.metadata["cpu_wavefront_runtime_sec"] is None
+    assert result.metadata["final_wavefront_backend"] == "unavailable"
 
 
 def test_unreachable_goal_can_still_have_two_wavefront_frames():

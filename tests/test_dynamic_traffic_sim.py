@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import networkx as nx
 
+from navigation import NavigationResult
 from traffic import (
     DynamicRouter,
     DynamicRouterConfig,
@@ -12,6 +13,7 @@ from traffic import (
     IncidentGeneratorConfig,
     SimulationEngine,
     SimulationEngineConfig,
+    TrafficIncident,
     initialize_edge_state,
 )
 from traffic.vehicle import make_navigation_vehicle
@@ -148,6 +150,55 @@ def test_simulation_engine_generates_runtime_vehicles_and_updates_metrics():
     assert "number_of_congested_edges" in result.metrics
 
 
+def test_start_navigation_from_existing_result_does_not_replan():
+    graph = _dynamic_graph()
+    engine = SimulationEngine(
+        graph,
+        SimulationEngineConfig(
+            flow=FlowGeneratorConfig(base_rate_veh_per_minute=0.0, random_seed=2),
+            incidents=IncidentGeneratorConfig(incident_probability_per_minute=0.0, random_seed=3),
+        ),
+    )
+    result = NavigationResult(
+        start_node=0,
+        goal_node=3,
+        path_nodes=[0, 1, 3],
+        path_edges=[(0, 1), (1, 3)],
+        metadata={"success": True, "snn_runtime_sec": 1.25},
+    )
+
+    started = engine.start_navigation_from_result(result)
+
+    assert started is result
+    assert engine.navigation_vehicle is not None
+    assert engine.navigation_vehicle.route == [0, 1, 3]
+    assert engine.navigation_result is result
+
+
+def test_simulation_step_does_not_call_route_planner_without_new_incident():
+    graph = _dynamic_graph()
+    engine = SimulationEngine(
+        graph,
+        SimulationEngineConfig(
+            dt=1.0,
+            flow=FlowGeneratorConfig(base_rate_veh_per_minute=0.0, random_seed=2),
+            incidents=IncidentGeneratorConfig(incident_probability_per_minute=0.0, random_seed=3),
+            route_congestion_interval_m=10_000.0,
+        ),
+    )
+    engine.start_navigation(0, 3)
+    calls = 0
+
+    def route_planner(_graph, _source, _target):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("route planner should only run when a new incident appears")
+
+    engine.step(route_planner=route_planner)
+
+    assert calls == 0
+
+
 def test_forced_resume_check_reroutes_using_current_state_despite_intervals():
     graph = _dynamic_graph()
     engine = SimulationEngine(
@@ -214,5 +265,151 @@ def test_distance_triggered_route_congestion_closes_snn_nodes_and_synapses():
     assert snapshot.blocked_edges
     blocked_edge = next(iter(snapshot.blocked_edges))
     assert engine.graph[blocked_edge[0]][blocked_edge[1]]["snn_synapse_closed"] is True
-    assert engine.graph.nodes[blocked_edge[1]]["snn_neuron_closed"] is True
+    assert engine.graph.nodes[blocked_edge[1]].get("snn_neuron_closed") is not True
     assert snapshot.inhibited_nodes[blocked_edge[1]] == 1.0
+
+
+def test_route_congestion_does_not_close_cut_edge_without_detour():
+    graph = nx.DiGraph()
+    for node in range(4):
+        graph.add_node(node, lat=0.0, lon=float(node) / 1000.0, x=float(node) / 1000.0, y=0.0, snn_neuron_index=node)
+    graph.add_edge(0, 1, length=100.0, highway="primary")
+    graph.add_edge(1, 2, length=100.0, highway="primary")
+    graph.add_edge(2, 3, length=100.0, highway="primary")
+    graph = initialize_edge_state(graph)
+    engine = SimulationEngine(
+        graph,
+        SimulationEngineConfig(
+            dt=5.0,
+            flow=FlowGeneratorConfig(base_rate_veh_per_minute=0.0, random_seed=2),
+            incidents=IncidentGeneratorConfig(incident_probability_per_minute=0.0, random_seed=3),
+            router=DynamicRouterConfig(reroute_check_interval=0.0, min_reroute_interval=0.0),
+            route_congestion_interval_m=50.0,
+            route_congestion_edge_count=1,
+            route_congestion_duration_seconds=600.0,
+        ),
+    )
+    engine.start_navigation(0, 3)
+
+    result = engine.step()
+
+    assert result.active_incidents == []
+    assert not engine.current_snapshot().blocked_edges
+
+
+def test_expired_route_congestion_restores_edge_and_node_state():
+    graph = nx.DiGraph()
+    for node in range(4):
+        graph.add_node(node, lat=0.0, lon=float(node) / 1000.0, x=float(node) / 1000.0, y=0.0, snn_neuron_index=node)
+    graph.add_edge(0, 1, length=100.0, highway="primary")
+    graph.add_edge(1, 2, length=100.0, highway="primary")
+    graph.add_edge(2, 3, length=100.0, highway="primary")
+    graph.add_edge(1, 3, length=300.0, highway="primary")
+    graph = initialize_edge_state(graph)
+    engine = SimulationEngine(
+        graph,
+        SimulationEngineConfig(
+            dt=5.0,
+            flow=FlowGeneratorConfig(base_rate_veh_per_minute=0.0, random_seed=2),
+            incidents=IncidentGeneratorConfig(incident_probability_per_minute=0.0, random_seed=3),
+            router=DynamicRouterConfig(reroute_check_interval=0.0, min_reroute_interval=0.0),
+            route_congestion_interval_m=50.0,
+            route_congestion_edge_count=1,
+            route_congestion_duration_seconds=1.0,
+        ),
+    )
+    engine.start_navigation(0, 3)
+
+    engine.step()
+    blocked_edges = list(engine.current_snapshot().blocked_edges)
+    assert blocked_edges
+    blocked_edge = blocked_edges[0]
+
+    engine.step(dt=5.0)
+
+    assert engine.graph[blocked_edge[0]][blocked_edge[1]]["state"] == "normal"
+    assert engine.graph[blocked_edge[0]][blocked_edge[1]]["snn_synapse_closed"] is False
+    assert engine.graph.nodes[blocked_edge[1]].get("snn_neuron_closed") is not True
+
+
+def test_clear_route_congestion_resets_closed_edges_nodes_and_metric():
+    graph = nx.DiGraph()
+    for node in range(4):
+        graph.add_node(node, lat=0.0, lon=float(node) / 1000.0, x=float(node) / 1000.0, y=0.0, snn_neuron_index=node)
+    graph.add_edge(0, 1, length=100.0, highway="primary")
+    graph.add_edge(1, 2, length=100.0, highway="primary")
+    graph.add_edge(2, 3, length=100.0, highway="primary")
+    graph.add_edge(1, 3, length=300.0, highway="primary")
+    graph = initialize_edge_state(graph)
+    engine = SimulationEngine(
+        graph,
+        SimulationEngineConfig(
+            dt=5.0,
+            flow=FlowGeneratorConfig(base_rate_veh_per_minute=0.0, random_seed=2),
+            incidents=IncidentGeneratorConfig(incident_probability_per_minute=0.0, random_seed=3),
+            router=DynamicRouterConfig(reroute_check_interval=0.0, min_reroute_interval=0.0),
+            route_congestion_interval_m=50.0,
+            route_congestion_edge_count=1,
+            route_congestion_duration_seconds=600.0,
+        ),
+    )
+    engine.start_navigation(0, 3)
+    engine.step()
+    blocked_edges = list(engine.current_snapshot().blocked_edges)
+    assert blocked_edges
+    blocked_edge = blocked_edges[0]
+    engine.metrics.metrics.number_of_congested_edges = 1
+
+    engine.clear_route_congestion()
+    snapshot = engine.current_snapshot()
+
+    assert engine.graph[blocked_edge[0]][blocked_edge[1]]["state"] == "normal"
+    assert engine.graph[blocked_edge[0]][blocked_edge[1]]["snn_synapse_closed"] is False
+    assert engine.graph.nodes[blocked_edge[1]].get("traffic_node_congestion", 0.0) == 0.0
+    assert not snapshot.blocked_edges
+    assert snapshot.inhibited_nodes == {}
+    assert engine.metrics.metrics.number_of_congested_edges == 0
+
+
+def test_blocked_edge_does_not_close_intersection_node_for_reroute():
+    graph = nx.DiGraph()
+    for node in range(4):
+        graph.add_node(node, lat=0.0, lon=float(node) / 1000.0, x=float(node) / 1000.0, y=0.0)
+    graph.add_edge(0, 1, length=100.0, highway="primary")
+    graph.add_edge(1, 3, length=100.0, highway="primary")
+    graph.add_edge(0, 2, length=120.0, highway="primary")
+    graph.add_edge(2, 3, length=120.0, highway="primary")
+    graph = initialize_edge_state(graph)
+    engine = SimulationEngine(
+        graph,
+        SimulationEngineConfig(
+            dt=1.0,
+            flow=FlowGeneratorConfig(base_rate_veh_per_minute=0.0, random_seed=2),
+            incidents=IncidentGeneratorConfig(incident_probability_per_minute=0.0, random_seed=3),
+        ),
+    )
+    incident = TrafficIncident(
+        event_id="test-closure",
+        affected_edges=[(1, 3)],
+        event_type="route_congestion",
+        start_time=0.0,
+        end_time=600.0,
+        capacity_multiplier=0.01,
+        speed_multiplier=0.01,
+    )
+    engine.incident_generator.incidents.append(incident)
+    engine.state_updater.update(engine.graph, [], [incident], current_time=0.0, dt=1.0)
+
+    route = nx.shortest_path(
+        nx.subgraph_view(
+            engine.graph,
+            filter_edge=lambda u, v: engine.graph[u][v].get("state") != "blocked",
+        ),
+        0,
+        3,
+        weight="travel_time",
+    )
+
+    assert engine.graph[1][3]["state"] == "blocked"
+    assert engine.graph.nodes[3].get("snn_neuron_closed") is not True
+    assert route == [0, 2, 3]

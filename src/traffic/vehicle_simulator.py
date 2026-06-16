@@ -12,6 +12,7 @@ from .vehicle import Vehicle
 @dataclass(frozen=True, slots=True)
 class VehicleSimulatorConfig:
     background_reroute_interval: float = 45.0
+    navigation_speed_mps: float | None = None
 
 
 class VehicleSimulator:
@@ -58,8 +59,15 @@ class VehicleSimulator:
                     break
 
                 attrs = graph[u][v]
+                if attrs.get("state") == "blocked" or attrs.get("snn_synapse_closed"):
+                    if vehicle.is_background_vehicle:
+                        self._maybe_reroute_background(graph, vehicle, current_time)
+                    remaining_time = 0.0
+                    break
                 length = max(1.0, float(attrs.get("length", 1.0) or 1.0))
                 speed = max(0.1, float(attrs.get("current_speed", attrs.get("free_flow_speed", 1.0)) or 1.0))
+                if not vehicle.is_background_vehicle and self.config.navigation_speed_mps is not None:
+                    speed = max(0.1, float(self.config.navigation_speed_mps))
                 distance_to_end = max(0.0, length - float(vehicle.position_on_edge))
                 time_to_end = distance_to_end / speed
                 if time_to_end > remaining_time:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import networkx as nx
 
-from .edge_state import clamp_delay_ms, initialize_edge_state
+from .edge_state import clamp_delay_ms
 from .incident_generator import TrafficIncident
 from .vehicle import Vehicle
 
@@ -24,6 +24,8 @@ class TrafficStateUpdater:
 
     def __init__(self, config: TrafficStateUpdaterConfig | None = None) -> None:
         self.config = config or TrafficStateUpdaterConfig()
+        self._last_dynamic_edges: set[tuple[int, int]] = set()
+        self._last_closed_nodes: set[int] = set()
 
     def _incident_multipliers(
         self,
@@ -53,11 +55,6 @@ class TrafficStateUpdater:
         dt: float,
     ) -> nx.DiGraph:
         """Update graph edge attributes for the current timestep."""
-        initialize_edge_state(graph, current_time=current_time)
-        for _node, attrs in graph.nodes(data=True):
-            attrs["snn_neuron_closed"] = False
-            attrs["traffic_node_congestion"] = 0.0
-
         vehicle_counts: dict[tuple[int, int], int] = {}
         for vehicle in vehicles:
             edge = vehicle.current_edge
@@ -67,11 +64,22 @@ class TrafficStateUpdater:
                 vehicle_counts[edge] = vehicle_counts.get(edge, 0) + 1
 
         incident_multipliers = self._incident_multipliers(incidents, current_time)
+        dynamic_edges = {
+            edge
+            for edge in set(vehicle_counts) | set(incident_multipliers) | self._last_dynamic_edges
+            if graph.has_edge(*edge)
+        }
+        for node in self._last_closed_nodes:
+            if node in graph:
+                graph.nodes[node]["traffic_node_congestion"] = 0.0
+        closed_nodes: set[int] = set()
+
         alpha = float(self.config.alpha)
         beta = float(self.config.beta)
         min_speed_fraction = max(0.01, float(self.config.min_speed_fraction))
 
-        for u, v, attrs in graph.edges(data=True):
+        for u, v in dynamic_edges:
+            attrs = graph[u][v]
             edge = (int(u), int(v))
             vehicle_count = int(vehicle_counts.get(edge, 0))
             base_capacity = float(attrs.get("base_capacity", attrs.get("capacity", 1.0)) or 1.0)
@@ -119,6 +127,12 @@ class TrafficStateUpdater:
                 attrs["traffic_congestion"] = 1.0
                 attrs["state"] = "blocked"
                 attrs["snn_synapse_closed"] = True
-                graph.nodes[v]["snn_neuron_closed"] = True
                 graph.nodes[v]["traffic_node_congestion"] = 1.0
+                closed_nodes.add(int(v))
+        self._last_dynamic_edges = {
+            edge
+            for edge in set(vehicle_counts) | set(incident_multipliers)
+            if graph.has_edge(*edge)
+        }
+        self._last_closed_nodes = closed_nodes
         return graph

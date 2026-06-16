@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import random
 
 import networkx as nx
 
@@ -14,9 +15,13 @@ from gui.app import (
     _add_comparison_route_overlays,
     _algorithm_comparison_rows,
     _coordinate_in_bbox,
+    _default_points,
     _ensure_playback_state,
     _finish_playback_state,
+    _merge_serial_comparisons,
     _pause_playback_state,
+    _route_component_view,
+    _serial_comparison_rows,
     _runtime_metric_rows,
     _start_playback_state,
     _validate_hangzhou_coordinates,
@@ -26,6 +31,7 @@ from gui.app import (
     _reachability_status,
 )
 from navigation import NavigationResult, WavefrontFrame
+from traffic import SerialNavigationComparison, SerialRouteRun
 
 
 def test_reachability_status_detects_reverse_only_route():
@@ -63,6 +69,54 @@ def test_hangzhou_coordinate_validation_uses_fixed_bbox():
         "起点坐标不在浙江省杭州市范围内，请输入杭州经纬度范围内的坐标。",
         "终点坐标不在浙江省杭州市范围内，请输入杭州经纬度范围内的坐标。",
     ]
+
+
+def test_default_points_stay_inside_fixed_bbox_even_if_graph_extends_outside():
+    graph = nx.DiGraph()
+    graph.add_node(0, lat=31.0, lon=119.0)
+    graph.add_node(1, lat=30.0, lon=121.0)
+
+    start_lat, start_lon, goal_lat, goal_lon = _default_points(graph, rng=random.Random(1))
+
+    assert _coordinate_in_bbox(start_lat, start_lon)
+    assert _coordinate_in_bbox(goal_lat, goal_lon)
+
+
+def test_default_points_use_random_reachable_pair_in_largest_connected_component():
+    graph = nx.DiGraph()
+    graph.add_node(0, lat=30.36, lon=120.05)
+    graph.add_node(1, lat=30.34, lon=120.08)
+    graph.add_node(2, lat=30.24, lon=120.21)
+    graph.add_node(9, lat=30.38, lon=120.22)
+    graph.add_edge(0, 1)
+    graph.add_edge(1, 2)
+    graph.add_edge(1, 0)
+    graph.add_edge(2, 1)
+
+    start_lat, start_lon, goal_lat, goal_lon = _default_points(graph, rng=random.Random(4))
+
+    coord_to_node = {
+        (float(attrs["lat"]), float(attrs["lon"])): int(node)
+        for node, attrs in graph.nodes(data=True)
+    }
+    start_node = coord_to_node[(start_lat, start_lon)]
+    goal_node = coord_to_node[(goal_lat, goal_lon)]
+    assert start_node in {0, 1, 2}
+    assert goal_node in {0, 1, 2}
+    assert start_node != goal_node
+    assert nx.has_path(graph, start_node, goal_node)
+
+
+def test_route_component_view_limits_planning_to_start_goal_component():
+    graph = nx.DiGraph()
+    graph.add_edge(0, 1)
+    graph.add_edge(1, 2)
+    graph.add_edge(9, 10)
+
+    view = _route_component_view(graph, 0, 2)
+
+    assert set(view.nodes()) == {0, 1, 2}
+    assert set(view.edges()) == {(0, 1), (1, 2)}
 
 
 def test_playback_state_transitions_are_explicit():
@@ -105,6 +159,8 @@ def test_gui_main_no_longer_exposes_region_or_tile_selectors():
     assert "使用 Brian2Loihi 后端" not in source
     assert "启用模拟交通" not in source
     assert "交通模式" not in source
+    assert "最近拥塞与重规划" not in source
+    assert "固定拥塞事件" not in source
     assert FOLIUM_TILE_NAME == "OpenStreetMap"
     assert "tiles=FOLIUM_TILE_NAME" in source
 
@@ -122,8 +178,10 @@ def test_gui_main_contains_required_chinese_labels():
         "终点经度",
         "道路网络：",
         "地图缩放/拖动已禁用",
-        "车辆每行驶约",
-        "增量发放脉冲",
+        "点击开始后",
+        "封路拥塞事件",
+        "提前约",
+        "只允许 Brian2Loihi",
         "模拟交通",
         "开始",
         "暂停",
@@ -214,6 +272,90 @@ def test_algorithm_comparison_rows_include_independent_benchmarks():
     assert rows[1]["耗时口径"] == "隔离图快照完整重算"
     assert rows[1]["路线关系"] == "与 SNN 相同"
     assert rows[2]["路线关系"] == "与 SNN 相同"
+
+
+def test_serial_comparison_rows_accumulate_reroute_rounds_without_average_speed_column():
+    initial = SerialNavigationComparison(
+        start_node=0,
+        goal_node=3,
+        congestion_schedule=[],
+        runs={
+            "snn": SerialRouteRun(
+                algorithm="snn",
+                label="SNN",
+                success=True,
+                path_nodes=[0, 1, 3],
+                total_planning_runtime_sec=7.0,
+                initial_planning_runtime_sec=7.0,
+                planning_event_count=1,
+            ),
+            "dijkstra": SerialRouteRun(
+                algorithm="dijkstra",
+                label="Dijkstra",
+                success=True,
+                path_nodes=[0, 1, 3],
+                total_planning_runtime_sec=0.2,
+                initial_planning_runtime_sec=0.2,
+                planning_event_count=1,
+            ),
+            "astar": SerialRouteRun(
+                algorithm="astar",
+                label="A*",
+                success=True,
+                path_nodes=[0, 1, 3],
+                total_planning_runtime_sec=0.1,
+                initial_planning_runtime_sec=0.1,
+                planning_event_count=1,
+            ),
+        },
+        runtime_sec=7.3,
+    )
+    reroute = SerialNavigationComparison(
+        start_node=1,
+        goal_node=3,
+        congestion_schedule=[],
+        runs={
+            "snn": SerialRouteRun(
+                algorithm="snn",
+                label="SNN",
+                success=True,
+                path_nodes=[1, 2, 3],
+                total_planning_runtime_sec=1.5,
+                initial_planning_runtime_sec=1.5,
+                planning_event_count=1,
+            ),
+            "dijkstra": SerialRouteRun(
+                algorithm="dijkstra",
+                label="Dijkstra",
+                success=True,
+                path_nodes=[1, 2, 3],
+                total_planning_runtime_sec=0.25,
+                initial_planning_runtime_sec=0.25,
+                planning_event_count=1,
+            ),
+            "astar": SerialRouteRun(
+                algorithm="astar",
+                label="A*",
+                success=True,
+                path_nodes=[1, 2, 3],
+                total_planning_runtime_sec=0.15,
+                initial_planning_runtime_sec=0.15,
+                planning_event_count=1,
+            ),
+        },
+        runtime_sec=1.9,
+    )
+
+    merged = _merge_serial_comparisons(initial, reroute, is_reroute=True)
+    rows = _serial_comparison_rows(merged)
+    by_algorithm = {row["算法"]: row for row in rows}
+
+    assert by_algorithm["SNN"]["总规划耗时（秒）"] == 8.5
+    assert by_algorithm["SNN"]["初始规划耗时（秒）"] == 7.0
+    assert by_algorithm["SNN"]["拥塞后重规划耗时（秒）"] == 1.5
+    assert by_algorithm["SNN"]["规划次数"] == 2
+    assert by_algorithm["SNN"]["重规划次数"] == 1
+    assert "平均速度（km/h）" not in by_algorithm["SNN"]
 
 
 def test_runtime_metric_rows_include_map_snn_stdp_loihi_and_classical_timings():

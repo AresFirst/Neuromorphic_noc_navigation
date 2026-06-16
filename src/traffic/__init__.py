@@ -11,6 +11,14 @@ from .metrics import MetricsRecorder, SimulationMetrics, baseline_dynamic_shorte
 from .simulation_engine import SimulationEngine, SimulationEngineConfig, SimulationStepResult
 from .simulator import TrafficConfig, apply_traffic_to_graph, generate_traffic_snapshot
 from .state import TrafficEdgeState, TrafficSnapshot
+from .serial_comparison import (
+    CongestionScheduleItem,
+    SerialNavigationComparison,
+    SerialRouteRun,
+    build_congestion_schedule,
+    run_serial_navigation_comparison,
+    run_serial_planning_round,
+)
 from .traffic_state_updater import TrafficStateUpdater, TrafficStateUpdaterConfig
 from .vehicle import Vehicle, make_navigation_vehicle
 from .vehicle_simulator import VehicleSimulator, VehicleSimulatorConfig
@@ -20,6 +28,7 @@ __all__ = [
     "DynamicRouterConfig",
     "FlowGenerator",
     "FlowGeneratorConfig",
+    "CongestionScheduleItem",
     "IncidentGenerator",
     "IncidentGeneratorConfig",
     "MetricsRecorder",
@@ -29,6 +38,8 @@ __all__ = [
     "SimulationEngineConfig",
     "SimulationMetrics",
     "SimulationStepResult",
+    "SerialNavigationComparison",
+    "SerialRouteRun",
     "TrafficConfig",
     "TrafficEdgeState",
     "TrafficIncident",
@@ -41,7 +52,10 @@ __all__ = [
     "apply_traffic_to_graph",
     "baseline_dynamic_shortest_path",
     "baseline_static_shortest_path",
+    "build_congestion_schedule",
     "generate_traffic_snapshot",
     "initialize_edge_state",
     "make_navigation_vehicle",
+    "run_serial_navigation_comparison",
+    "run_serial_planning_round",
 ]

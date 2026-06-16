@@ -49,9 +49,17 @@ class MetricsRecorder:
     def __init__(self) -> None:
         self.metrics = SimulationMetrics()
 
-    def record_network(self, graph: nx.DiGraph) -> None:
-        speeds = [float(attrs.get("current_speed", 0.0) or 0.0) for _u, _v, attrs in graph.edges(data=True)]
-        congestion = [float(attrs.get("congestion_level", 0.0) or 0.0) for _u, _v, attrs in graph.edges(data=True)]
+    def record_network(self, graph: nx.DiGraph, candidate_edges: set[tuple[int, int]] | None = None) -> None:
+        if candidate_edges is None:
+            edge_items = list(graph.edges(data=True))
+        else:
+            edge_items = [
+                (u, v, graph[u][v])
+                for u, v in candidate_edges
+                if graph.has_edge(int(u), int(v))
+            ]
+        speeds = [float(attrs.get("current_speed", 0.0) or 0.0) for _u, _v, attrs in edge_items]
+        congestion = [float(attrs.get("congestion_level", 0.0) or 0.0) for _u, _v, attrs in edge_items]
         congested = sum(1 for value in congestion if value >= 0.7)
         self.metrics.samples += 1
         n = float(self.metrics.samples)

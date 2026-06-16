@@ -1,170 +1,135 @@
 # SNN 拥塞路径规划说明
 
-本文说明 Web 演示中导航车辆遇到随机拥塞时，SNN 路径规划如何选择新路线，以及拥塞路段如何产生。地图加载逻辑保持不变；下面只描述运行时交通与重规划逻辑。
+本文说明当前 Web 演示里的实际逻辑：初始点击“运行 SNN 导航”时不注入任何拥塞；点击“开始”后车辆行驶，途中才随机出现封路型拥塞。每次封路出现后，SNN、Dijkstra、A* 会在同一当前道路状态下串行重规划。
 
-## 拥塞如何随机出现
+## 初始规划
 
-模拟交通使用固定场景：没有背景车流随机注入，也没有额外人工可选参数。导航车辆每累计行驶约 `route_congestion_interval_m` 米后，在当前剩余路线的前方随机选择若干条候选边作为拥塞路段。
+每次点击“加载杭州地图”后，Web 会在当前杭州 bounding box 内的同一个连通道路分量中随机选择两个不同节点作为起点和终点，并用 `nx.has_path` 保证从起点到终点有可行路径。随后点击“运行 SNN 导航”时，系统按顺序执行：
 
-当前 Web 配置中：
+1. SNN：Brian2Loihi wavefront + STDP parent trace 回溯。
+2. Dijkstra：在当前无拥塞图快照上完整规划。
+3. A*：在当前无拥塞图快照上完整规划。
 
-- `route_congestion_interval_m = 5000.0`，即车辆每行驶约 5 km 触发一次路线拥塞检查。
-- `route_congestion_edge_count = 2`，每次最多随机选 2 条前方候选边。
-- `route_congestion_capacity_multiplier = 0.01`。
-- `route_congestion_speed_multiplier = 0.01`。
-- 随机数由 `random_seed = 7` 固定，因此同一条路线、同一仿真过程可复现。
-
-候选边选择逻辑：
-
-1. 从车辆当前边的下一条边开始向终点扫描。
-2. 优先不关闭车辆正在行驶的边，避免车辆瞬间落在不可通行边上。
-3. 默认跳过直接连接终点的最后一条边，尽量让系统有替代路径可选。
-4. 对候选边列表执行随机打乱，再取前 `route_congestion_edge_count` 条。
+初始阶段不会生成 `route_congestion`，也不会关闭任何道路。地图会显示三种算法当前已经得到的路线。
 
 伪代码：
 
 ```text
-function maybe_trigger_route_congestion(vehicle, current_time):
-    if vehicle is None or vehicle.arrived:
-        return []
-
-    while vehicle.total_distance >= next_route_congestion_distance:
-        candidates = []
-        start_index = vehicle.current_edge_index + 1
-
-        for i from start_index to len(vehicle.route) - 2:
-            edge = (vehicle.route[i], vehicle.route[i + 1])
-            if edge.target == vehicle.destination:
-                continue
-            if graph.has_edge(edge):
-                candidates.append(edge)
-
-        if candidates is empty and vehicle.current_edge exists:
-            candidates.append(vehicle.current_edge)
-
-        shuffle(candidates, seeded_rng)
-        affected_edges = first N candidates
-        next_route_congestion_distance += route_congestion_interval_m
-
-        if affected_edges is not empty:
-            incident = TrafficIncident(
-                affected_edges = affected_edges,
-                start_time = current_time,
-                end_time = current_time + route_congestion_duration_seconds,
-                capacity_multiplier = 0.01,
-                speed_multiplier = 0.01
-            )
-            incident_generator.incidents.append(incident)
+function run_initial_planning(graph, start, goal):
+    snn_route = run_brian2loihi_wavefront(graph, start, goal)
+    dijkstra_route = run_dijkstra(copy_or_view(graph), start, goal)
+    astar_route = run_astar(copy_or_view(graph), start, goal)
+    return routes
 ```
 
-## 拥塞如何映射到 SNN
+## 行驶中拥塞如何出现
 
-每个仿真步会把活跃拥塞事件应用到道路图边属性。若某条边的容量或速度乘子小于等于 `0.05`，该边会被视为阻塞：
+点击“开始”后，车辆按约 30 km/h 行驶。系统根据当前 SNN/可用路线的总长度，把全程最多分成 5 到 10 个拥塞触发点。每次车辆累计行驶到触发距离后，系统从车辆前方约 3 km 范围内随机选一条未来路段作为封路障碍。
 
-- 道路边 `state = "blocked"`。
-- 对应 SNN 突触 `snn_synapse_closed = True`。
-- 该边下游节点对应的 SNN 神经元 `snn_neuron_closed = True`。
-- 下游节点的拥塞标记 `traffic_node_congestion = 1.0`。
+当前 Web 配置：
+
+- 最大封路拥塞数：`max_route_congestion_events = 10`。
+- 目标封路数：`route_congestion_target_count = 7`。
+- 每次封路边数：`route_congestion_edge_count = 1`。
+- 预知距离：`route_congestion_lookahead_m = 3000.0`。
+- 导航车速：`navigation_speed_mps = 8.33`，约 30 km/h。
+- 随机种子：`random_seed = 7`，同一路线下可复现。
+
+封路选择不会封车辆正在行驶的边；优先选择车辆前方较远的未来边，让车辆有机会提前绕行。
 
 伪代码：
 
 ```text
-function apply_incident_to_edge(edge u->v, capacity_multiplier, speed_multiplier):
-    update travel_time, cost, delay_ms using current speed and capacity
+function maybe_trigger_route_congestion(vehicle):
+    if vehicle.total_distance < next_trigger_distance:
+        return no_event
 
-    if capacity_multiplier <= 0.05 or speed_multiplier <= 0.05:
-        edge.state = "blocked"
-        edge.snn_synapse_closed = true
-        graph.nodes[v].snn_neuron_closed = true
-        graph.nodes[v].traffic_node_congestion = 1.0
+    candidates = future_edges_ahead(vehicle.route, lookahead=3000m)
+    candidates = remove_current_edge(candidates)
+    candidates = prefer_edges_far_enough_ahead(candidates)
+    affected_edge = seeded_random_choice(candidates)
+
+    mark_incident(affected_edge)
+    next_trigger_distance += route_length / (target_count + 1)
 ```
 
-## SNN 遇到拥塞时如何选择路线
+## 封路如何映射到 SNN 和道路图
 
-初始规划使用完整 SNN wavefront：先从起点发放脉冲，得到所有可达节点的首次 spike 时间，再通过 STDP parent trace 从终点回溯到起点，得到 SNN 路径。
+当前实现把拥塞视为“道路边封闭”，不是“整个路口节点消失”。
 
-拥塞发生后，不重新执行“把整个道路图转换为 SNN”的过程。系统复用已经存在的图/SNN 映射，只从车辆当前所在边的终点节点发放一次新的增量 pulse：
+被选中的道路边 `u -> v` 会变成硬障碍：
 
-1. 当前车辆节点取 `vehicle.current_edge_end`。
-2. 已关闭神经元和突触在增量 wavefront 中不可通行。
-3. 为避免不现实的立即折返，若当前边反向边存在，临时把反向边关闭。
-4. 增量 wavefront 只在当前图状态上扩散。
-5. 根据 spike 时间推断 parent trace。
-6. 从终点沿 parent trace 回溯生成候选新路线。
-7. 用当前图上的 `travel_time` 计算旧剩余路线 ETA 和新路线 ETA。
-8. 只有当新路线 ETA 至少满足改善阈值时，才替换车辆剩余路线；否则保留旧路线并记录未重规划原因。
+- `edge.state = "blocked"`。
+- `edge.snn_synapse_closed = True`。
+- `edge.travel_time` 和 `edge.cost` 大幅升高。
+- `graph.nodes[v].traffic_node_congestion = 1.0` 仅用于可视化拥塞点。
+- 不再设置 `graph.nodes[v].snn_neuron_closed = True`。
+
+这样做的原因是：封一条路不等于关闭整个路口。Dijkstra/A* 和 SNN 都应能从其他未封道路进入同一个路口，从而绕开原封路段。
 
 伪代码：
 
 ```text
-function reroute_snn_after_congestion(graph, vehicle, destination):
+function apply_closure(edge u->v):
+    edge.state = "blocked"
+    edge.snn_synapse_closed = true
+    edge.travel_time = edge.free_flow_time * 100
+    edge.cost = edge.travel_time
+    graph.nodes[v].traffic_node_congestion = 1.0
+```
+
+车辆移动器也会把 `state="blocked"` 或 `snn_synapse_closed=True` 的边当成硬停止条件；如果没有成功重规划，车辆不会继续穿过封路边。
+
+导航结束或车辆到达终点后，Web 会清理本次行驶中仍处于活跃状态的封路事件，并把道路边状态、下游节点可视化拥塞标记和“拥堵路段”指标恢复为空闲状态。
+
+## 封路后如何重规划
+
+每次封路出现后，系统从车辆当前可重规划节点开始，按顺序运行三种算法：
+
+1. SNN：不使用 CPU wavefront，只调用 Brian2Loihi 从当前节点重新发放 spike，并用 STDP parent trace 回溯新路线。
+2. Dijkstra：不读取 SNN spike、parent trace 或旧搜索状态，在当前封路图上完整重算最短路。
+3. A*：同样不读取 SNN 状态，在当前封路图上完整重算最短路。
+
+伪代码：
+
+```text
+function reroute_after_closure(graph, vehicle, goal):
     source = vehicle.current_edge_end
-    old_route = vehicle.remaining_route_from_current_edge_end()
-    old_eta = eta(graph, old_route)
 
-    planning_graph = graph
-    if graph.has_edge(vehicle.current_edge_end, vehicle.current_edge_start):
-        planning_graph = graph.copy()
-        close reverse edge in planning_graph
-
-    result = run_incremental_snn_navigation(
-        planning_graph,
+    snn_route = run_incremental_snn_navigation(
+        graph,
         start_node = source,
-        goal_node = destination
+        goal_node = goal,
+        use_loihi = true,
+        allow_cpu_fallback = false
     )
 
-    new_route = result.path_nodes
-    new_eta = eta(planning_graph, new_route)
+    dijkstra_route = run_dijkstra(current_graph_view(graph), source, goal)
+    astar_route = run_astar(current_graph_view(graph), source, goal)
 
-    if new_route is empty:
-        return keep_old_route(reason = "no_current_route_available")
-
-    if new_route == old_route:
-        return keep_old_route(reason = "same_route")
-
-    if old_eta > new_eta * (1 + eta_improvement_threshold):
-        vehicle.replace_remaining_route(new_route)
-        return use_new_route(reason = "lookahead_congestion or eta_improvement")
-
-    return keep_old_route(reason = "severe_congestion_without_eta_improvement or eta_improvement_too_small")
+    vehicle.route = snn_route if snn_route.success else first_successful_classical_route
+    return all_three_routes_for_display
 ```
 
-## 与 Dijkstra / A* 的隔离
+在正确的 Brian2Loihi 环境中，车辆优先采用 SNN 路线。若当前 Python 进程没有 Brian2Loihi，SNN 会明确失败且不会降级到 CPU；页面可以用 Dijkstra/A* 的成功路线继续验证车辆和封路流程。
 
-每次 SNN 规划结果生成后，Dijkstra 和 A* 都会从同一个当前道路图快照上各自完整重算路线：
+## 耗时口径
 
-- Dijkstra 不读取 SNN spike 时间、parent trace 或 SNN 回溯路径。
-- A* 不读取 SNN spike 时间、parent trace 或 SNN 回溯路径。
-- 两个传统算法也不会共享彼此的搜索状态。
-- 传统算法只读取当前图里的边权重、阻塞状态和关闭的 SNN 节点/突触标记，用于判断哪些边或节点不可通行。
+- SNN 总规划耗时：当前行驶过程内的累计规划耗时。初始规划包含 Brian2Loihi wavefront、STDP parent trace、路径回溯；拥塞后重规划只累计从当前节点重发 spike 后的 Brian2Loihi wavefront 与回溯耗时。
+- Brian2Loihi 仿真器用时：`run_wavefront(use_loihi=True)` 调用耗时。
+- CPU wavefront / fallback 用时：严格 SNN 对比中应为空。
+- Dijkstra / A* 耗时：每次在当前封路图快照上的完整路径重算耗时。
+- 地图 load 用时：只包括加载/构建道路图和缓存道路几何，不包含导航算法耗时。
 
-伪代码：
+因此 SNN 单次重规划耗时通常会低于首次规划：首次规划需要完成整张当前图上的完整 Brian2Loihi 波前传播；拥塞后按演示设定只从车辆当前可重规划节点重新发放 spike。表格中的“总规划耗时”会把这些单次耗时累计起来，不会用最近一次重规划覆盖初始耗时。
 
-```text
-function compare_algorithms(graph_snapshot, start, goal):
-    snn_result = run_snn_or_incremental_snn(graph_snapshot, start, goal)
+## 运行环境
 
-    dijkstra_graph = copy(graph_snapshot)
-    dijkstra_result = run_dijkstra(dijkstra_graph, start, goal)
+Brian2Loihi 安装在 `neuro-nav` 环境中时，需要从该环境启动 Web 服务：
 
-    astar_graph = copy(graph_snapshot)
-    astar_result = run_astar(astar_graph, start, goal)
-
-    return {
-        "snn": snn_result,
-        "dijkstra": dijkstra_result,
-        "astar": astar_result
-    }
+```bash
+conda activate neuro-nav
+PYTHONPATH=src streamlit run src/gui/app.py
 ```
 
-## Web 指标口径
-
-界面中的耗时指标按实际调用边界记录：
-
-- 地图 load 总用时：当前点击“加载杭州地图”事件中，图数据取回/构建与道路几何缓存的总耗时。若 Streamlit 缓存命中，图数据部分反映缓存取回耗时。
-- Brian2Loihi 仿真器用时：`run_wavefront(use_loihi=True)` 的实际调用耗时；如果后端不可用，该指标代表失败检测耗时，随后 CPU fallback 会单独计时。
-- CPU wavefront / fallback 用时：CPU reference wavefront 或增量 SNN pulse 的耗时。
-- STDP parent trace 用时：`infer_parent_trace_from_spikes` 的耗时。
-- 路径重建与成本计算用时：`reconstruct_path_from_parent + compute_path_cost` 的耗时。
-- STDP 路径回溯总用时：parent trace、路径重建和成本计算的合计。
-- Dijkstra / A* 规划用时：各自在隔离图快照上的完整路径重算耗时。
+如果从 base Python 启动，页面会报告 Brian2Loihi 不可用；这不是算法失败，而是运行解释器没有加载到 `brian2` / `brian2_loihi`。

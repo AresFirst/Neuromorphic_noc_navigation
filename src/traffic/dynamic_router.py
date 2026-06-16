@@ -107,12 +107,11 @@ class DynamicRouter:
         reverse_edge = (int(current_v), int(current_u))
         if not graph.has_edge(*reverse_edge):
             return graph
-        planning_graph = graph.copy()
-        attrs = planning_graph[reverse_edge[0]][reverse_edge[1]]
-        attrs["state"] = "blocked"
-        attrs["snn_synapse_closed"] = True
-        attrs["immediate_backtrack_blocked"] = True
-        return planning_graph
+        return nx.subgraph_view(
+            graph,
+            filter_node=lambda node: True,
+            filter_edge=lambda u, v: (int(u), int(v)) != reverse_edge,
+        )
 
     def _lookahead_congested_edges(self, graph: nx.DiGraph, vehicle: Vehicle) -> list[tuple[int, int]]:
         edges: list[tuple[int, int]] = []

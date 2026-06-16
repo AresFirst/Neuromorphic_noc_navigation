@@ -329,6 +329,29 @@ def _crop_graph_to_bbox(graph: nx.MultiDiGraph, bbox: BoundingBox) -> nx.MultiDi
     return cropped
 
 
+def _graph_fits_bbox(graph: nx.MultiDiGraph, bbox: BoundingBox, *, tolerance: float = 0.005) -> bool:
+    # 固定缓存文件名不会随 bbox 改变。若用户之前生成过更大范围的缓存，
+    # 这里需要识别并裁剪，否则 Web 端会继续加载旧的大地图。
+    if graph.number_of_nodes() == 0:
+        return True
+    lat_values: list[float] = []
+    lon_values: list[float] = []
+    for _node, attrs in graph.nodes(data=True):
+        try:
+            lon_values.append(float(attrs.get("x")))
+            lat_values.append(float(attrs.get("y")))
+        except (TypeError, ValueError):
+            continue
+    if not lat_values or not lon_values:
+        return True
+    return (
+        min(lat_values) >= float(bbox.south) - float(tolerance)
+        and max(lat_values) <= float(bbox.north) + float(tolerance)
+        and min(lon_values) >= float(bbox.west) - float(tolerance)
+        and max(lon_values) <= float(bbox.east) + float(tolerance)
+    )
+
+
 def _graph_is_unsimplified(graph: nx.MultiDiGraph) -> bool:
     value = graph.graph.get("simplified")
     if isinstance(value, str):
@@ -419,6 +442,17 @@ def load_hangzhou_graph(
         _fixed_cache_path(cache_dir=cache_dir, cache_filename=f"hangzhou_core_bidirectional_{network_type}.graphml"),
         _fixed_cache_path(cache_dir=cache_dir, cache_filename=f"hangzhou_{network_type}.graphml"),
     ]
+    if use_cache and fixed_cache.exists():
+        try:
+            ox = _import_osmnx()
+        except RuntimeError:
+            ox = None
+        cached_graph = _load_graphml(fixed_cache, ox)
+        if not _graph_fits_bbox(cached_graph, HANGZHOU_BBOX):
+            cached_graph = _crop_graph_to_bbox(cached_graph, HANGZHOU_BBOX)
+            _save_graphml(cached_graph, fixed_cache, ox)
+        return cached_graph
+
     if use_cache and not fixed_cache.exists():
         try:
             ox = _import_osmnx()

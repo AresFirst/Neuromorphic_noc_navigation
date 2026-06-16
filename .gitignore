@@ -1,3 +1,4 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+data/osm_cache/hangzhou_core_dense_bidirectional_*.graphml
