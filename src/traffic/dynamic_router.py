@@ -180,9 +180,9 @@ class DynamicRouter:
         if not new_plan.route or new_plan.route == old_route:
             return None
 
-        improvement_ok = old_eta > new_plan.eta * (1.0 + float(self.config.eta_improvement_threshold))
         severe_ahead = bool(affected_edges)
-        if not improvement_ok:
+        improvement_ok = old_eta > new_plan.eta * (1.0 + float(self.config.eta_improvement_threshold))
+        if not improvement_ok and not severe_ahead:
             return RerouteDecision(
                 rerouted=False,
                 reroute_time=float(current_time),

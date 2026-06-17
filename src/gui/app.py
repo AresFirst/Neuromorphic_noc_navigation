@@ -48,6 +48,7 @@ MAX_BASE_ROAD_EDGES = 0
 MAX_TRAFFIC_EDGES = 80
 TRAFFIC_STEPS_PER_REFRESH = 1
 ROUTE_CONGESTION_INTERVAL_M = 5_000.0
+ROUTE_CONGESTION_LOOKAHEAD_EDGES = 3
 TRAFFIC_DT_SECONDS = 20.0
 PLAYBACK_FRAME_SECONDS = 1.0
 ROUTE_COLORS = {
@@ -820,7 +821,8 @@ def _simulation_config() -> SimulationEngineConfig:
             congestion_threshold=0.8,
         ),
         route_congestion_interval_m=ROUTE_CONGESTION_INTERVAL_M,
-        route_congestion_edge_count=2,
+        route_congestion_edge_count=1,
+        route_congestion_lookahead_edges=ROUTE_CONGESTION_LOOKAHEAD_EDGES,
         route_congestion_duration_seconds=900.0,
         route_congestion_capacity_multiplier=0.01,
         route_congestion_speed_multiplier=0.01,
@@ -880,7 +882,7 @@ def main() -> None:
         st.header("模拟交通")
         st.caption(
             f"车辆每行驶约 {ROUTE_CONGESTION_INTERVAL_M / 1000:.1f} km，"
-            "前方路线随机出现局部拥塞。"
+            f"当前路线前方 {ROUTE_CONGESTION_LOOKAHEAD_EDGES} 条路段内随机出现一个局部拥塞。"
         )
         st.caption(
             "拥塞路段会关闭对应突触和下游神经元；SNN 从当前车辆节点增量发放脉冲，"
@@ -974,12 +976,24 @@ def main() -> None:
     path_exists, reachability_message = _reachability_status(graph, start_node, goal_node)
 
     def _full_snn_route_planner(route_graph: nx.DiGraph, source: int, target: int) -> NavigationResult:
-        # 初始路线固定走 Brian2Loihi；后端不可用时 run_navigation 会按原逻辑降级。
-        return run_navigation(route_graph, source, target, use_loihi=USE_LOIHI_BACKEND)
+        # 初始路线固定走 Brian2Loihi；严格对比时不使用 CPU wavefront fallback。
+        return run_navigation(
+            route_graph,
+            source,
+            target,
+            use_loihi=USE_LOIHI_BACKEND,
+            allow_cpu_fallback=False,
+        )
 
     def _incremental_snn_route_planner(route_graph: nx.DiGraph, source: int, target: int) -> NavigationResult:
         # 拥塞后的重规划复用已构建的图/SNN 映射，只从当前节点重新发放脉冲。
-        return run_incremental_snn_navigation(route_graph, source, target)
+        return run_incremental_snn_navigation(
+            route_graph,
+            source,
+            target,
+            use_loihi=USE_LOIHI_BACKEND,
+            allow_cpu_fallback=False,
+        )
 
     # 主要动作：
     # 1. 运行 SNN 导航：生成当前路线和 wavefront；

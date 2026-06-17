@@ -122,6 +122,34 @@ def test_dynamic_router_blocks_immediate_backtrack_during_reroute():
     assert vehicle.route == [0, 1, 2, 3]
 
 
+def test_dynamic_router_accepts_congestion_detour_without_eta_threshold_gain():
+    graph = nx.DiGraph()
+    for node in range(4):
+        graph.add_node(node, lat=0.0, lon=float(node), x=float(node), y=0.0, snn_neuron_index=node)
+    graph.add_edge(0, 1, travel_time=1.0, length=1.0, state="normal")
+    graph.add_edge(1, 3, travel_time=1.0, length=1.0, congestion_level=0.95, state="blocked", snn_synapse_closed=True)
+    graph.add_edge(1, 2, travel_time=10.0, length=1.0, state="normal")
+    graph.add_edge(2, 3, travel_time=10.0, length=1.0, state="normal")
+    vehicle = make_navigation_vehicle("nav", 0, 3, [0, 1, 3], 0.0)
+    vehicle.last_reroute_time = -100.0
+    router = DynamicRouter(
+        DynamicRouterConfig(
+            reroute_check_interval=0.0,
+            min_reroute_interval=0.0,
+            eta_improvement_threshold=10.0,
+            congestion_threshold=0.8,
+        )
+    )
+
+    decision = router.maybe_reroute(graph, vehicle, current_time=10.0)
+
+    assert decision is not None
+    assert decision.rerouted is True
+    assert decision.affected_edge_ids == [(1, 3)]
+    assert decision.new_route == [1, 2, 3]
+    assert vehicle.route == [0, 1, 2, 3]
+
+
 def test_simulation_engine_generates_runtime_vehicles_and_updates_metrics():
     graph = _dynamic_graph()
     engine = SimulationEngine(
@@ -216,3 +244,31 @@ def test_distance_triggered_route_congestion_closes_snn_nodes_and_synapses():
     assert engine.graph[blocked_edge[0]][blocked_edge[1]]["snn_synapse_closed"] is True
     assert engine.graph.nodes[blocked_edge[1]]["snn_neuron_closed"] is True
     assert snapshot.inhibited_nodes[blocked_edge[1]] == 1.0
+
+
+def test_route_congestion_is_sampled_only_from_near_current_route():
+    graph = nx.DiGraph()
+    for node in range(8):
+        graph.add_node(node, lat=0.0, lon=float(node) / 1000.0, x=float(node) / 1000.0, y=0.0, snn_neuron_index=node)
+    for node in range(7):
+        graph.add_edge(node, node + 1, length=100.0, highway="primary")
+    graph = initialize_edge_state(graph)
+    engine = SimulationEngine(
+        graph,
+        SimulationEngineConfig(
+            random_seed=4,
+            flow=FlowGeneratorConfig(base_rate_veh_per_minute=0.0, random_seed=2),
+            incidents=IncidentGeneratorConfig(incident_probability_per_minute=0.0, random_seed=3),
+            route_congestion_edge_count=1,
+            route_congestion_lookahead_edges=3,
+        ),
+    )
+    engine.start_navigation(0, 7)
+    assert engine.navigation_vehicle is not None
+    engine.navigation_vehicle.current_edge_index = 1
+
+    candidates = engine._candidate_route_congestion_edges()
+
+    assert len(candidates) == 1
+    assert candidates[0] in {(2, 3), (3, 4), (4, 5)}
+    assert candidates[0] not in {(5, 6), (6, 7)}

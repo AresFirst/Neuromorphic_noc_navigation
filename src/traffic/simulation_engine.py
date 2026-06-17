@@ -33,6 +33,7 @@ class SimulationEngineConfig:
     router: DynamicRouterConfig | None = None
     route_congestion_interval_m: float = 5_000.0
     route_congestion_edge_count: int = 2
+    route_congestion_lookahead_edges: int = 3
     route_congestion_duration_seconds: float = 600.0
     route_congestion_capacity_multiplier: float = 0.01
     route_congestion_speed_multiplier: float = 0.01
@@ -126,11 +127,16 @@ class SimulationEngine:
         vehicle = self.navigation_vehicle
         if vehicle is None or vehicle.arrived or len(vehicle.route) < 2:
             return []
-        # Avoid closing the edge the vehicle is currently traversing; close one
-        # or two upcoming synapses so the next pulse starts from the current node.
+        # Avoid closing the edge the vehicle is currently traversing. Congestion
+        # is discovered only in the near lookahead window, not precomputed from
+        # the whole remaining route at the origin.
         start_idx = min(vehicle.current_edge_index + 1, max(0, len(vehicle.route) - 2))
+        stop_idx = min(
+            len(vehicle.route) - 1,
+            start_idx + max(1, int(self.config.route_congestion_lookahead_edges)),
+        )
         candidates: list[tuple[int, int]] = []
-        for idx in range(start_idx, len(vehicle.route) - 1):
+        for idx in range(start_idx, stop_idx):
             edge = (int(vehicle.route[idx]), int(vehicle.route[idx + 1]))
             if edge[1] == vehicle.destination:
                 continue

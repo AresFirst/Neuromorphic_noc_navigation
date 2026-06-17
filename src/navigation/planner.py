@@ -64,7 +64,10 @@ def run_navigation(
     cost_attr: str = "cost",
     use_loihi: bool = True,
     loihi_config: dict[str, Any] | None = None,
+    allow_cpu_fallback: bool = True,
     benchmark_algorithms: Sequence[str] | None = ("dijkstra", "astar"),
+    include_wavefront_frames: bool = True,
+    include_spike_times_metadata: bool = True,
 ) -> NavigationResult:
     """Run the SNN pipeline and return a standard navigation result."""
     config = loihi_config or {}
@@ -97,23 +100,24 @@ def run_navigation(
     final_wavefront_backend = wavefront.get("backend")
     loihi_error = None
     if use_loihi and not wavefront.get("success"):
-        # Loihi 后端不可用或失败时自动降级到 CPU reference，保证 GUI 闭环仍可运行。
+        # 交互调试可以允许 CPU reference fallback；严格对比场景会关闭该兜底。
         loihi_error = wavefront.get("error")
-        wavefront_started = time.perf_counter()
-        wavefront = run_wavefront(
-            graph,
-            int(start_node),
-            int(goal_node),
-            delay_attr=delay_attr,
-            use_loihi=False,
-            threshold=float(config.get("threshold", 1.0)),
-            weight=float(config.get("weight", 1.1)),
-            refractory_ms=int(config.get("refractory_ms", 1000)),
-            seed=int(config.get("seed", 0)),
-        )
-        cpu_wavefront_runtime_sec = time.perf_counter() - wavefront_started
-        wavefront_runtime_sec = cpu_wavefront_runtime_sec
-        final_wavefront_backend = wavefront.get("backend")
+        if allow_cpu_fallback:
+            wavefront_started = time.perf_counter()
+            wavefront = run_wavefront(
+                graph,
+                int(start_node),
+                int(goal_node),
+                delay_attr=delay_attr,
+                use_loihi=False,
+                threshold=float(config.get("threshold", 1.0)),
+                weight=float(config.get("weight", 1.1)),
+                refractory_ms=int(config.get("refractory_ms", 1000)),
+                seed=int(config.get("seed", 0)),
+            )
+            cpu_wavefront_runtime_sec = time.perf_counter() - wavefront_started
+            wavefront_runtime_sec = cpu_wavefront_runtime_sec
+            final_wavefront_backend = wavefront.get("backend")
     # 统一把后端返回的 key 转成 int，避免 GraphML 字符串节点和 JSON 显示造成混乱。
     spike_times = {
         int(node): float(time_ms)
@@ -161,7 +165,9 @@ def run_navigation(
         goal_node=int(goal_node),
         path_nodes=[int(node) for node in path_nodes],
         path_edges=path_edges,
-        wavefront_frames=_wavefront_frames(graph, spike_times, delay_attr=delay_attr),
+        wavefront_frames=_wavefront_frames(graph, spike_times, delay_attr=delay_attr)
+        if include_wavefront_frames
+        else [],
         total_cost=total_cost,
         metadata={
             "success": bool(path_nodes),
@@ -181,7 +187,7 @@ def run_navigation(
             "num_spikes": int(wavefront.get("num_spikes", 0) or 0),
             "active_neurons": int(wavefront.get("active_neurons", 0) or 0),
             "sim_time_ms": wavefront.get("sim_time_ms"),
-            "spike_times_by_node": spike_times,
+            "spike_times_by_node": spike_times if include_spike_times_metadata else {},
             "wavefront_time_max_ms": int(max((round(time_ms) for time_ms in spike_times.values()), default=0)),
             "path_length_m": _path_attr_sum(graph, path_nodes, "length"),
             "path_travel_time_s": _path_attr_sum(graph, path_nodes, "travel_time"),

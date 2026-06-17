@@ -162,6 +162,58 @@ def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):
     assert result.metadata["stdp_path_backtrace_runtime_sec"] >= 0.0
 
 
+def test_navigation_can_disable_cpu_fallback(monkeypatch):
+    calls: list[bool] = []
+
+    def fake_run_wavefront(_graph, _start_node, _goal_node, *, use_loihi, **_kwargs):
+        calls.append(bool(use_loihi))
+        return {
+            "backend": "unavailable",
+            "success": False,
+            "error": "backend missing",
+            "spike_times_by_neuron": {},
+        }
+
+    monkeypatch.setattr("navigation.planner.run_wavefront", fake_run_wavefront)
+
+    result = run_navigation(_toy_graph(), 0, 2, use_loihi=True, allow_cpu_fallback=False)
+
+    assert calls == [True]
+    assert result.path_nodes == []
+    assert result.metadata["success"] is False
+    assert result.metadata["backend"] == "unavailable"
+    assert result.metadata["loihi_error"] == "backend missing"
+    assert result.metadata["cpu_wavefront_runtime_sec"] is None
+    assert result.metadata["final_wavefront_backend"] == "unavailable"
+
+
+def test_incremental_snn_can_use_loihi_backend(monkeypatch):
+    calls: list[bool] = []
+
+    def fake_run_wavefront(_graph, _start_node, _goal_node, *, use_loihi, **_kwargs):
+        calls.append(bool(use_loihi))
+        return {
+            "backend": "brian2_loihi",
+            "success": True,
+            "error": None,
+            "spike_times_by_neuron": {0: 0.0, 1: 1.0, 2: 3.0},
+            "target_arrival_time_ms": 3.0,
+            "num_spikes": 3,
+            "active_neurons": 3,
+            "sim_time_ms": 3,
+        }
+
+    monkeypatch.setattr("navigation.incremental.run_wavefront", fake_run_wavefront)
+
+    result = run_incremental_snn_navigation(_toy_graph(), 0, 2, use_loihi=True, allow_cpu_fallback=False)
+
+    assert calls == [True]
+    assert result.path_nodes == [0, 1, 2]
+    assert result.metadata["final_wavefront_backend"] == "brian2_loihi"
+    assert result.metadata["brian2loihi_simulator_runtime_sec"] is not None
+    assert result.metadata["cpu_wavefront_runtime_sec"] is None
+
+
 def test_unreachable_goal_can_still_have_two_wavefront_frames():
     # 不可达并不代表没有 wavefront：起点和可达邻居仍会发放，目标不会发放。
     graph = nx.DiGraph()

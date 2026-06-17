@@ -123,6 +123,7 @@ def test_gui_main_contains_required_chinese_labels():
         "道路网络：",
         "地图缩放/拖动已禁用",
         "车辆每行驶约",
+        "当前路线前方",
         "增量发放脉冲",
         "模拟交通",
         "开始",
@@ -141,6 +142,21 @@ def test_gui_main_contains_required_chinese_labels():
         "调试信息 / 元数据 / 日志",
     ]:
         assert label in source
+
+
+def test_gui_snn_route_planners_use_strict_brian2loihi():
+    source = inspect.getsource(gui_app.main)
+
+    assert "use_loihi=USE_LOIHI_BACKEND" in source
+    assert source.count("allow_cpu_fallback=False") >= 2
+
+
+def test_gui_route_congestion_uses_one_near_future_event():
+    config = gui_app._simulation_config()
+
+    assert config.route_congestion_edge_count == 1
+    assert config.route_congestion_lookahead_edges == gui_app.ROUTE_CONGESTION_LOOKAHEAD_EDGES
+    assert config.route_congestion_lookahead_edges == 3
 
 
 def test_wavefront_frame_at_arbitrary_timestep():
