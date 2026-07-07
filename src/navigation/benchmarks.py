@@ -36,6 +36,13 @@ class AlgorithmBenchmarkResult:
 RouteFunction = Callable[[nx.DiGraph, int, int, str], list[int]]
 
 
+@dataclass(frozen=True, slots=True)
+class AlgorithmSpec:
+    label: str
+    route_function: RouteFunction
+    runtime_scope: str = "隔离图快照上的完整路径重算"
+
+
 def _positive_float(value: object) -> float | None:
     if isinstance(value, (list, tuple)) and value:
         value = value[0]
@@ -115,6 +122,26 @@ def _dijkstra_path(graph: nx.DiGraph, start_node: int, goal_node: int, cost_attr
     return [int(node) for node in nx.dijkstra_path(view, int(start_node), int(goal_node), weight=_weight_function(cost_attr))]
 
 
+def _reverse_multi_source_dijkstra_path(
+    graph: nx.DiGraph,
+    start_node: int,
+    goal_node: int,
+    cost_attr: str,
+) -> list[int]:
+    if int(start_node) == int(goal_node):
+        return [int(start_node)]
+    reversed_view = _routable_view(graph).reverse(copy=False)
+    _distances, paths = nx.multi_source_dijkstra(
+        reversed_view,
+        [int(goal_node)],
+        weight=_weight_function(cost_attr),
+    )
+    reversed_path = paths.get(int(start_node))
+    if not reversed_path:
+        raise nx.NetworkXNoPath(f"No path between {start_node} and {goal_node}.")
+    return [int(node) for node in reversed(reversed_path)]
+
+
 def _lat_lon(graph: nx.DiGraph, node: int) -> tuple[float, float] | None:
     attrs = graph.nodes.get(node, {})
     lat = _finite_float(attrs.get("lat", attrs.get("y")))
@@ -191,9 +218,21 @@ def _astar_path(graph: nx.DiGraph, start_node: int, goal_node: int, cost_attr: s
     ]
 
 
-ALGORITHMS: dict[str, tuple[str, RouteFunction]] = {
-    "dijkstra": ("Dijkstra", _dijkstra_path),
-    "astar": ("A*", _astar_path),
+DEFAULT_BENCHMARK_ALGORITHMS: tuple[str, ...] = (
+    "dijkstra",
+    "astar",
+    "reverse_multi_source_dijkstra",
+)
+
+
+ALGORITHMS: dict[str, AlgorithmSpec] = {
+    "dijkstra": AlgorithmSpec("Dijkstra", _dijkstra_path),
+    "astar": AlgorithmSpec("A*", _astar_path),
+    "reverse_multi_source_dijkstra": AlgorithmSpec(
+        "反向多源Dijkstra",
+        _reverse_multi_source_dijkstra_path,
+        runtime_scope="反向图多源 Dijkstra 场构建 + 单路径回溯",
+    ),
 }
 
 
@@ -206,15 +245,15 @@ def _run_single_benchmark(
     algorithm: str,
     copy_graph: bool,
 ) -> AlgorithmBenchmarkResult:
-    label, route_function = ALGORITHMS[algorithm]
+    spec = ALGORITHMS[algorithm]
     started = time.perf_counter()
     try:
         planning_graph = graph.copy() if copy_graph else graph
-        path_nodes = route_function(planning_graph, int(start_node), int(goal_node), cost_attr)
+        path_nodes = spec.route_function(planning_graph, int(start_node), int(goal_node), cost_attr)
         runtime_sec = time.perf_counter() - started
         return AlgorithmBenchmarkResult(
             algorithm=algorithm,
-            label=label,
+            label=spec.label,
             success=True,
             runtime_sec=float(runtime_sec),
             path_nodes=path_nodes,
@@ -222,12 +261,13 @@ def _run_single_benchmark(
             total_cost=_path_cost(planning_graph, path_nodes, cost_attr),
             path_length_m=_path_attr_sum(planning_graph, path_nodes, "length"),
             path_travel_time_s=_path_attr_sum(planning_graph, path_nodes, "travel_time"),
+            runtime_scope=spec.runtime_scope,
         )
     except Exception as exc:
         runtime_sec = time.perf_counter() - started
         return AlgorithmBenchmarkResult(
             algorithm=algorithm,
-            label=label,
+            label=spec.label,
             success=False,
             runtime_sec=float(runtime_sec),
             error=str(exc),
@@ -240,7 +280,7 @@ def run_algorithm_benchmarks(
     goal_node: int,
     *,
     cost_attr: str = "cost",
-    algorithms: Sequence[str] = ("dijkstra", "astar"),
+    algorithms: Sequence[str] = DEFAULT_BENCHMARK_ALGORITHMS,
     copy_graph_per_algorithm: bool = True,
 ) -> dict[str, dict[str, object]]:
     """Run classical path algorithms without sharing route state between them."""

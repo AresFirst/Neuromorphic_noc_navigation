@@ -48,6 +48,9 @@ def test_toy_graph_runs_navigation_planner_with_cpu_compatible_wavefront():
     assert benchmarks["astar"]["success"] is True
     assert benchmarks["astar"]["path_nodes"] == [0, 1, 2]
     assert benchmarks["astar"]["total_cost"] == 3.0
+    assert benchmarks["reverse_multi_source_dijkstra"]["success"] is True
+    assert benchmarks["reverse_multi_source_dijkstra"]["path_nodes"] == [0, 1, 2]
+    assert benchmarks["reverse_multi_source_dijkstra"]["total_cost"] == 3.0
 
 
 def test_snn_parent_trace_tie_breaks_by_real_route_cost():
@@ -76,6 +79,8 @@ def test_classical_benchmarks_skip_blocked_edges_without_snn_state():
     assert benchmarks["dijkstra"]["total_cost"] == 10.0
     assert benchmarks["astar"]["path_nodes"] == [0, 2]
     assert benchmarks["astar"]["total_cost"] == 10.0
+    assert benchmarks["reverse_multi_source_dijkstra"]["path_nodes"] == [0, 2]
+    assert benchmarks["reverse_multi_source_dijkstra"]["total_cost"] == 10.0
 
 
 def test_astar_benchmark_uses_osm_heuristic_without_losing_optimal_route():
@@ -93,6 +98,17 @@ def test_astar_benchmark_uses_osm_heuristic_without_losing_optimal_route():
     assert benchmarks["astar"]["success"] is True
     assert benchmarks["astar"]["path_nodes"] == [0, 1, 2]
     assert benchmarks["astar"]["total_cost"] == 2.0
+
+
+def test_reverse_multi_source_dijkstra_benchmark_matches_forward_shortest_path():
+    graph = _toy_graph()
+
+    benchmarks = run_algorithm_benchmarks(graph, 0, 2, cost_attr="cost", algorithms=("reverse_multi_source_dijkstra",))
+
+    assert benchmarks["reverse_multi_source_dijkstra"]["success"] is True
+    assert benchmarks["reverse_multi_source_dijkstra"]["path_nodes"] == [0, 1, 2]
+    assert benchmarks["reverse_multi_source_dijkstra"]["total_cost"] == 3.0
+    assert benchmarks["reverse_multi_source_dijkstra"]["runtime_scope"] == "反向图多源 Dijkstra 场构建 + 单路径回溯"
 
 
 def test_incremental_snn_avoids_closed_neurons_and_still_benchmarks_full_recompute():
@@ -121,6 +137,7 @@ def test_incremental_snn_avoids_closed_neurons_and_still_benchmarks_full_recompu
     assert result.metadata["closed_synapse_count"] == 1
     assert result.metadata["algorithm_benchmarks"]["dijkstra"]["path_nodes"] == [0, 2, 3]
     assert result.metadata["algorithm_benchmarks"]["astar"]["path_nodes"] == [0, 2, 3]
+    assert result.metadata["algorithm_benchmarks"]["reverse_multi_source_dijkstra"]["path_nodes"] == [0, 2, 3]
 
 
 def test_navigation_falls_back_when_loihi_backend_fails(monkeypatch):

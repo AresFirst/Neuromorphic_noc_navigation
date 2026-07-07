@@ -200,20 +200,31 @@ def test_algorithm_comparison_rows_include_independent_benchmarks():
                     "total_cost": 3.0,
                     "path_travel_time_s": 3.0,
                 },
+                "reverse_multi_source_dijkstra": {
+                    "label": "反向多源Dijkstra",
+                    "success": True,
+                    "runtime_sec": 0.009,
+                    "path_nodes": [0, 1, 2],
+                    "path_node_count": 3,
+                    "total_cost": 3.0,
+                    "path_travel_time_s": 3.0,
+                },
             },
         },
     )
 
     rows = _algorithm_comparison_rows(result)
 
-    assert [row["算法"] for row in rows] == ["SNN", "Dijkstra", "A*"]
+    assert [row["算法"] for row in rows] == ["SNN", "Dijkstra", "A*", "反向多源Dijkstra"]
     assert rows[0]["算法计算耗时（秒）"] == 0.12
     assert rows[1]["算法计算耗时（秒）"] == 0.01
     assert rows[2]["算法计算耗时（秒）"] == 0.008
+    assert rows[3]["算法计算耗时（秒）"] == 0.009
     assert rows[0]["耗时口径"] == "SNN 规划核心"
     assert rows[1]["耗时口径"] == "隔离图快照完整重算"
     assert rows[1]["路线关系"] == "与 SNN 相同"
     assert rows[2]["路线关系"] == "与 SNN 相同"
+    assert rows[3]["路线关系"] == "与 SNN 相同"
 
 
 def test_runtime_metric_rows_include_map_snn_stdp_loihi_and_classical_timings():
@@ -246,6 +257,12 @@ def test_runtime_metric_rows_include_map_snn_stdp_loihi_and_classical_timings():
                     "runtime_sec": 0.009,
                     "runtime_scope": "A* isolated",
                 },
+                "reverse_multi_source_dijkstra": {
+                    "label": "反向多源Dijkstra",
+                    "success": True,
+                    "runtime_sec": 0.007,
+                    "runtime_scope": "Reverse multi-source field",
+                },
             },
         },
     )
@@ -270,6 +287,7 @@ def test_runtime_metric_rows_include_map_snn_stdp_loihi_and_classical_timings():
     assert by_metric["STDP 路径回溯总用时"]["耗时（秒）"] == 0.007
     assert by_metric["Dijkstra 规划用时"]["耗时（秒）"] == 0.011
     assert by_metric["A* 规划用时"]["耗时（秒）"] == 0.009
+    assert by_metric["反向多源Dijkstra 规划用时"]["耗时（秒）"] == 0.007
 
 
 def test_comparison_route_overlays_always_draw_astar_even_when_path_matches_snn():
@@ -289,6 +307,7 @@ def test_comparison_route_overlays_always_draw_astar_even_when_path_matches_snn(
             "algorithm_benchmarks": {
                 "dijkstra": {"success": True, "path_nodes": [0, 1, 2]},
                 "astar": {"success": True, "path_nodes": [0, 1, 2]},
+                "reverse_multi_source_dijkstra": {"success": True, "path_nodes": [0, 1, 2]},
             },
         },
     )
@@ -308,5 +327,9 @@ def test_comparison_route_overlays_always_draw_astar_even_when_path_matches_snn(
 
     _add_comparison_route_overlays(FakeFolium, object(), graph, result)
 
-    assert [call["tooltip"] for call in calls] == ["Dijkstra 路线", "A* 路线"]
-    assert [call["color"] for call in calls] == [ROUTE_COLORS["dijkstra"], ROUTE_COLORS["astar"]]
+    assert [call["tooltip"] for call in calls] == ["Dijkstra 路线", "A* 路线", "反向多源Dijkstra 路线"]
+    assert [call["color"] for call in calls] == [
+        ROUTE_COLORS["dijkstra"],
+        ROUTE_COLORS["astar"],
+        ROUTE_COLORS["reverse_multi_source_dijkstra"],
+    ]

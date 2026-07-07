@@ -8,7 +8,7 @@ from typing import Any
 
 import networkx as nx
 
-from navigation import NavigationResult
+from navigation import DEFAULT_BENCHMARK_ALGORITHMS, NavigationResult
 
 from .dynamic_router import DynamicRouter, DynamicRouterConfig, RerouteDecision, RoutePlanner
 from .edge_state import initialize_edge_state, route_eta
@@ -71,7 +71,7 @@ class SimulationEngine:
         self.rng = random.Random(self.config.random_seed)
         self.next_route_congestion_distance = float(self.config.route_congestion_interval_m)
         self.route_congestion_counter = 0
-        self.routing_runtime_totals = {"snn": 0.0, "dijkstra": 0.0, "astar": 0.0}
+        self.routing_runtime_totals = {"snn": 0.0, **{key: 0.0 for key in DEFAULT_BENCHMARK_ALGORITHMS}}
         self.routing_event_count = 0
 
     @property
@@ -113,7 +113,7 @@ class SimulationEngine:
         self.routing_runtime_totals["snn"] += float(result.metadata.get("snn_runtime_sec", 0.0) or 0.0)
         benchmarks = result.metadata.get("algorithm_benchmarks") or {}
         if isinstance(benchmarks, dict):
-            for key in ("dijkstra", "astar"):
+            for key in DEFAULT_BENCHMARK_ALGORITHMS:
                 payload = benchmarks.get(key) or {}
                 if isinstance(payload, dict):
                     self.routing_runtime_totals[key] += float(payload.get("runtime_sec", 0.0) or 0.0)
@@ -194,7 +194,7 @@ class SimulationEngine:
         self.last_reroute_decision = None
         self.next_route_congestion_distance = float(self.config.route_congestion_interval_m)
         self.route_congestion_counter = 0
-        self.routing_runtime_totals = {"snn": 0.0, "dijkstra": 0.0, "astar": 0.0}
+        self.routing_runtime_totals = {"snn": 0.0, **{key: 0.0 for key in DEFAULT_BENCHMARK_ALGORITHMS}}
         self.routing_event_count = 0
         self.navigation_result = plan.raw_result if isinstance(plan.raw_result, NavigationResult) else self._result_from_route(
             plan.route,

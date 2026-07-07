@@ -12,7 +12,7 @@ from loihi_planner.path_compare import compute_path_cost
 from loihi_planner.path_reconstruction import reconstruct_path_from_parent
 from loihi_planner.wavefront_reference import event_driven_wavefront
 
-from .benchmarks import run_algorithm_benchmarks
+from .benchmarks import DEFAULT_BENCHMARK_ALGORITHMS, run_algorithm_benchmarks
 from .result import NavigationResult
 
 
@@ -37,7 +37,7 @@ def run_incremental_snn_navigation(
     *,
     delay_attr: str = "delay_ms",
     cost_attr: str = "cost",
-    benchmark_algorithms: Sequence[str] | None = ("dijkstra", "astar"),
+    benchmark_algorithms: Sequence[str] | None = DEFAULT_BENCHMARK_ALGORITHMS,
 ) -> NavigationResult:
     """Send a new pulse from ``start_node`` without rebuilding the SNN graph.
 

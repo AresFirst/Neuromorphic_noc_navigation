@@ -12,7 +12,7 @@ from loihi_planner.path_compare import compute_path_cost
 from loihi_planner.path_reconstruction import reconstruct_path_from_parent
 from snn import run_wavefront
 
-from .benchmarks import run_algorithm_benchmarks
+from .benchmarks import DEFAULT_BENCHMARK_ALGORITHMS, run_algorithm_benchmarks
 from .result import NavigationResult, WavefrontFrame
 
 
@@ -64,7 +64,7 @@ def run_navigation(
     cost_attr: str = "cost",
     use_loihi: bool = True,
     loihi_config: dict[str, Any] | None = None,
-    benchmark_algorithms: Sequence[str] | None = ("dijkstra", "astar"),
+    benchmark_algorithms: Sequence[str] | None = DEFAULT_BENCHMARK_ALGORITHMS,
 ) -> NavigationResult:
     """Run the SNN pipeline and return a standard navigation result."""
     config = loihi_config or {}

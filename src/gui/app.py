@@ -19,7 +19,13 @@ from maps import (
     osmnx_multidigraph_to_digraph,
     path_nodes_to_latlon,
 )
-from navigation import NavigationResult, WavefrontFrame, run_incremental_snn_navigation, run_navigation
+from navigation import (
+    DEFAULT_BENCHMARK_ALGORITHMS,
+    NavigationResult,
+    WavefrontFrame,
+    run_incremental_snn_navigation,
+    run_navigation,
+)
 from traffic import (
     DynamicRouterConfig,
     FlowGeneratorConfig,
@@ -54,6 +60,12 @@ ROUTE_COLORS = {
     "snn": "#dc2626",
     "dijkstra": "#2563eb",
     "astar": "#16a34a",
+    "reverse_multi_source_dijkstra": "#ea580c",
+}
+BENCHMARK_LABELS = {
+    "dijkstra": "Dijkstra",
+    "astar": "A*",
+    "reverse_multi_source_dijkstra": "反向多源Dijkstra",
 }
 REROUTE_REASON_LABELS = {
     "lookahead_congestion": "前方拥堵",
@@ -564,8 +576,9 @@ def _add_comparison_route_overlays(
     styles = {
         "dijkstra": {"weight": 5, "opacity": 0.72, "dash_array": "10,7"},
         "astar": {"weight": 3, "opacity": 0.92, "dash_array": "2,7"},
+        "reverse_multi_source_dijkstra": {"weight": 4, "opacity": 0.82, "dash_array": "12,4,3,4"},
     }
-    for algorithm, label in (("dijkstra", "Dijkstra"), ("astar", "A*")):
+    for algorithm in DEFAULT_BENCHMARK_ALGORITHMS:
         path_nodes = _benchmark_path_nodes(result, algorithm)
         if len(path_nodes) < 2:
             continue
@@ -579,7 +592,7 @@ def _add_comparison_route_overlays(
             weight=int(style["weight"]),
             opacity=float(style["opacity"]),
             dash_array=str(style["dash_array"]),
-            tooltip=f"{label} 路线",
+            tooltip=f"{BENCHMARK_LABELS[algorithm]} 路线",
         ).add_to(fmap)
 
 
@@ -760,7 +773,7 @@ def _runtime_metric_rows(
 
     benchmarks = metadata.get("algorithm_benchmarks") or {}
     if isinstance(benchmarks, dict):
-        for key in ("dijkstra", "astar"):
+        for key in DEFAULT_BENCHMARK_ALGORITHMS:
             payload = benchmarks.get(key) or {}
             if not isinstance(payload, dict):
                 continue

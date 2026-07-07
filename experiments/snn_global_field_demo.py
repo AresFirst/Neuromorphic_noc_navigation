@@ -23,7 +23,7 @@ from loihi_planner.backend_check import check_brian2loihi_available
 from loihi_planner.parent_trace import infer_parent_trace_from_spikes
 from loihi_planner.path_reconstruction import reconstruct_path_from_parent
 from maps import HANGZHOU_BBOX, load_hangzhou_graph, load_osm_graph, make_bidirectional_roads, osmnx_multidigraph_to_digraph
-from navigation.benchmarks import run_algorithm_benchmarks
+from navigation.benchmarks import DEFAULT_BENCHMARK_ALGORITHMS, run_algorithm_benchmarks
 from snn import run_wavefront
 from traffic import initialize_edge_state
 
@@ -36,6 +36,12 @@ MAX_QUERY_COUNT = max(SCALES)
 MIN_DISTANCE_M = 3_000.0
 MAX_SAMPLE_ATTEMPTS = 120
 LEGACY_HANGZHOU_CACHE = "hangzhou_core_bidirectional_drive.graphml"
+BENCHMARK_LABELS = {
+    "dijkstra": "Dijkstra",
+    "astar": "A*",
+    "reverse_multi_source_dijkstra": "反向多源Dijkstra",
+}
+SUMMARY_ALGORITHMS = ("SNN Brian2Loihi", "Dijkstra", "A*", "反向多源Dijkstra")
 
 
 @dataclass(frozen=True)
@@ -412,7 +418,7 @@ def _demo_multi_target(
             )
 
     pairs = [(source, target) for target in targets]
-    for algorithm, label in (("dijkstra", "Dijkstra"), ("astar", "A*")):
+    for algorithm in DEFAULT_BENCHMARK_ALGORITHMS:
         benchmark_rows = _benchmark_prefix_routes(graph, pairs, algorithm)
         for scale in SCALES:
             success_count, runtime, lengths, node_counts, error = benchmark_rows[int(scale)]
@@ -421,7 +427,7 @@ def _demo_multi_target(
                     demo="多目标同时搜索",
                     sample_id=sample_id,
                     scale=int(scale),
-                    algorithm=label,
+                    algorithm=BENCHMARK_LABELS[algorithm],
                     success_count=int(success_count),
                     query_count=int(scale),
                     wavefront_count=0,
@@ -437,6 +443,89 @@ def _demo_multi_target(
                     error=error,
                 )
             )
+    return rows
+
+
+def _reverse_multi_source_shared_target_rows(
+    graph: nx.DiGraph,
+    reverse_graph: nx.DiGraph,
+    users: list[int],
+    destination: int,
+    sample_id: str,
+) -> list[DemoRow]:
+    field_started = time.perf_counter()
+    try:
+        _distances, reversed_paths = nx.multi_source_dijkstra(
+            reverse_graph,
+            [int(destination)],
+            weight=_weight_function("cost"),
+        )
+        field_runtime_sec = time.perf_counter() - field_started
+    except Exception as exc:
+        field_runtime_sec = time.perf_counter() - field_started
+        return [
+            DemoRow(
+                demo="多用户共享目标场",
+                sample_id=sample_id,
+                scale=int(scale),
+                algorithm=BENCHMARK_LABELS["reverse_multi_source_dijkstra"],
+                success_count=0,
+                query_count=int(scale),
+                wavefront_count=0,
+                planning_calls=1,
+                total_runtime_sec=float(field_runtime_sec),
+                wavefront_runtime_sec=None,
+                field_build_runtime_sec=float(field_runtime_sec),
+                route_backtrace_runtime_sec=0.0,
+                avg_path_length_m=None,
+                avg_path_nodes=None,
+                selected_target=destination,
+                backend="reverse_multi_source_dijkstra",
+                error=str(exc),
+            )
+            for scale in SCALES
+        ]
+
+    rows: list[DemoRow] = []
+    for scale in SCALES:
+        prefix = users[:scale]
+        backtrace_started = time.perf_counter()
+        success_count = 0
+        lengths: list[float] = []
+        node_counts: list[int] = []
+        error: str | None = None
+        for user in prefix:
+            reversed_path = reversed_paths.get(int(user))
+            if not reversed_path:
+                if error is None:
+                    error = f"User {user} is unreachable from destination {destination}"
+                continue
+            route = [int(node) for node in reversed(reversed_path)]
+            success_count += 1
+            lengths.append(_path_length_m(graph, route))
+            node_counts.append(len(route))
+        backtrace_runtime_sec = time.perf_counter() - backtrace_started
+        rows.append(
+            DemoRow(
+                demo="多用户共享目标场",
+                sample_id=sample_id,
+                scale=int(scale),
+                algorithm=BENCHMARK_LABELS["reverse_multi_source_dijkstra"],
+                success_count=int(success_count),
+                query_count=int(scale),
+                wavefront_count=0,
+                planning_calls=1,
+                total_runtime_sec=float(field_runtime_sec + backtrace_runtime_sec),
+                wavefront_runtime_sec=None,
+                field_build_runtime_sec=float(field_runtime_sec),
+                route_backtrace_runtime_sec=float(backtrace_runtime_sec),
+                avg_path_length_m=_row_average_path_length(lengths),
+                avg_path_nodes=_row_average_path_nodes(node_counts),
+                selected_target=destination,
+                backend="reverse_multi_source_dijkstra",
+                error=error,
+            )
+        )
     return rows
 
 
@@ -546,7 +635,7 @@ def _demo_shared_target(
             )
 
     pairs = [(user, destination) for user in users]
-    for algorithm, label in (("dijkstra", "Dijkstra"), ("astar", "A*")):
+    for algorithm in ("dijkstra", "astar"):
         benchmark_rows = _benchmark_prefix_routes(graph, pairs, algorithm)
         for scale in SCALES:
             success_count, runtime, lengths, node_counts, error = benchmark_rows[int(scale)]
@@ -555,7 +644,7 @@ def _demo_shared_target(
                     demo="多用户共享目标场",
                     sample_id=sample_id,
                     scale=int(scale),
-                    algorithm=label,
+                    algorithm=BENCHMARK_LABELS[algorithm],
                     success_count=int(success_count),
                     query_count=int(scale),
                     wavefront_count=0,
@@ -571,13 +660,14 @@ def _demo_shared_target(
                     error=error,
                 )
             )
+    rows.extend(_reverse_multi_source_shared_target_rows(graph, reverse_graph, users, destination, sample_id))
     return rows
 
 
 def _summary_rows(rows: list[DemoRow], demo: str) -> list[list[object]]:
     output: list[list[object]] = []
     for scale in SCALES:
-        for algorithm in ("SNN Brian2Loihi", "Dijkstra", "A*"):
+        for algorithm in SUMMARY_ALGORITHMS:
             group = [row for row in rows if row.demo == demo and row.scale == scale and row.algorithm == algorithm]
             runtimes = [row.total_runtime_sec for row in group if row.success_count == row.query_count]
             output.append(
@@ -634,9 +724,11 @@ def _build_report(
     conclusion = (
         "在无拥塞杭州主城图上，SNN 的优势不来自单次点到点规划，而来自一次 wavefront 的全局复用。"
         f"多目标同时搜索在 200 个候选目标下：SNN {_fmt_float(mt_200.get('SNN Brian2Loihi'))} 秒，"
-        f"Dijkstra {_fmt_float(mt_200.get('Dijkstra'))} 秒，A* {_fmt_float(mt_200.get('A*'))} 秒。"
+        f"Dijkstra {_fmt_float(mt_200.get('Dijkstra'))} 秒，A* {_fmt_float(mt_200.get('A*'))} 秒，"
+        f"反向多源Dijkstra {_fmt_float(mt_200.get('反向多源Dijkstra'))} 秒。"
         f"多用户共享目标场在 200 个用户下：SNN {_fmt_float(st_200.get('SNN Brian2Loihi'))} 秒，"
-        f"Dijkstra {_fmt_float(st_200.get('Dijkstra'))} 秒，A* {_fmt_float(st_200.get('A*'))} 秒。"
+        f"Dijkstra {_fmt_float(st_200.get('Dijkstra'))} 秒，A* {_fmt_float(st_200.get('A*'))} 秒，"
+        f"反向多源Dijkstra {_fmt_float(st_200.get('反向多源Dijkstra'))} 秒。"
     )
     return "\n\n".join(
         [
@@ -653,6 +745,7 @@ def _build_report(
                     "- 场景无拥塞：不关闭节点、不关闭突触、不修改交通状态。",
                     "- SNN：每个样本只运行一次 Brian2Loihi wavefront，然后用 spike time / parent trace / next-hop field 服务多个查询。",
                     "- Dijkstra/A*：每个目标或用户都独立运行一次完整路径规划；规模为 N 时，规划调用次数为 N。",
+                    "- 反向多源Dijkstra：在共享终点场景中先在反向图上做一次多源 Dijkstra 场构建，再对每个用户做常数级别路径回溯；在多目标场景中退化为逐目标独立运行。",
                     "- 为保证 Brian2Loihi 仿真时间覆盖所有 sampled queries，实验只在采样阶段选择一个最远 simulator target；路线选择和 next-hop field 不读取 Dijkstra/A* 的路径结果。",
                     f"- Brian2Loihi 检测：`available={backend_info.get('available')}`，`module={backend_info.get('brian2loihi_module')}`，`error={backend_info.get('error')}`。",
                     "- CPU fallback：脚本直接调用 `run_wavefront(... use_loihi=True)` 并拒绝 `cpu_reference` 后端。",
@@ -678,6 +771,7 @@ def _build_report(
                 [
                     "- 多目标同时搜索中，SNN 从一个起点发放一次 wavefront，并用同一份 parent trace 回溯所有候选目标的完整路线；如只需要最近目标，也可直接选择最早发放的候选目标。",
                     "- 多用户共享目标场中，SNN 在反向图上从共享终点发放一次 wavefront，parent trace 可直接解释为所有节点指向终点的 next-hop field；每个用户只需沿 next-hop field 回溯完整路线。",
+                    "- 反向多源Dijkstra 是这一场景下最接近 SNN 路径场复用的经典方法：它同样一次性构建共享终点的最短路场，但仍然在 CPU 上显式维护优先队列和距离表。",
                     "- 这两个 demo 展示的是应用级复用优势：查询数量增加时，经典算法调用次数线性增加，而 SNN 的核心 wavefront 调用次数保持为 1。",
                     "- Brian2Loihi 仍是软件仿真，绝对耗时不一定总是低于高度优化的经典图算法；因此应重点观察随目标数/用户数增长的趋势和调用次数差异。",
                 ]
