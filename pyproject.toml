@@ -1,0 +1,15 @@
+[build-system]
+requires = []
+build-backend = "build_backend"
+backend-path = ["."]
+
+[project]
+name = "neuromorphic-osm-snn-navigation"
+version = "0.1.0"
+description = "Real OSM road-map navigation with Brian2Loihi wavefront planning and a Streamlit GUI"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning:pyparsing.*"]

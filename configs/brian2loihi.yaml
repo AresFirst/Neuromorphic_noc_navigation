@@ -1,6 +1,5 @@
-# Brian2Loihi SNN 模拟器配置文件
-# 用于 run_loihi_wavefront.py 等需要 Loihi SNN 后端的实验，
-# 控制脉冲神经元模型的核心参数
+# Brian2Loihi SNN planner configuration.
+# Used by navigation.run_navigation and the Streamlit GUI.
 
 # SNN 后端选择。目前固定为 brian2loihi
 # brian2loihi: 使用 brian2-loihi 包的 Loihi 兼容 LIF 神经元模型

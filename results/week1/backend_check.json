@@ -1,6 +1,0 @@
-{
-  "available": false,
-  "brian2_version": null,
-  "brian2loihi_version": null,
-  "error": "brian2 import failed: No module named 'brian2'; brian2loihi import failed: No module named 'brian2loihi'"
-}

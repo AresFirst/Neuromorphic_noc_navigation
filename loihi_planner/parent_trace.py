@@ -9,8 +9,8 @@
             predicted_time = spike_time[predecessor] + edge_delay
             if |predicted_time - spike_time[node]| <= tolerance_ms:
                 此 predecessor 为候选父节点
-        在所有候选父节点中，选择 predicted_time 最早的
-        (平局时选节点 ID 最小的)
+        在所有候选父节点中，优先选择时间误差最小、累计真实代价更低的父节点
+        (最后才按节点 ID 稳定打破平局)
 
 这对应于"波前沿最短路径传播"的假设:
 最早触发当前节点的前驱才是真正的父节点。
@@ -23,12 +23,27 @@ import math
 import networkx as nx
 
 
+def _positive_edge_cost(attrs: dict[str, object], preferred_attr: str) -> float:
+    for key in (preferred_attr, "cost", "travel_time", "length"):
+        value = attrs.get(key)
+        if isinstance(value, (list, tuple)) and value:
+            value = value[0]
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(parsed) and parsed > 0.0:
+            return parsed
+    return 1.0
+
+
 def infer_parent_trace_from_spikes(
     G: nx.DiGraph,
     spike_times_by_neuron: dict[int, float],
     start: int,
     delay_attr: str = "delay_ms",
     tolerance_ms: float = 1.0,
+    tie_break_attr: str = "cost",
 ) -> dict[int, int | None]:
     """从 SNN 脉冲时间和图拓扑推断每个节点的父节点。
 
@@ -41,6 +56,7 @@ def infer_parent_trace_from_spikes(
         start: 起点节点 ID（其父节点始终为 None）。
         delay_attr: 边延迟属性名。
         tolerance_ms: 时间匹配容差 (ms)。|prediction - actual| <= tolerance 视为匹配。
+        tie_break_attr: 多个前驱在同一 spike 时间内匹配时，用于稳定选择更合理父节点的真实代价属性。
 
     Returns:
         {节点ID: 父节点ID 或 None} 字典。
@@ -54,22 +70,31 @@ def infer_parent_trace_from_spikes(
     if start not in G:
         raise nx.NodeNotFound(f"start node {start} not found")
 
-    for node in G.nodes():
-        # 跳过起点和未发放的节点
-        if node == start or node not in spike_times_by_neuron:
-            continue
+    accumulated_cost: dict[int, float] = {int(start): 0.0}
+    fired_nodes = sorted(
+        (node for node in G.nodes() if node in spike_times_by_neuron and node != start),
+        key=lambda item: (float(spike_times_by_neuron[item]), int(item)),
+    )
 
+    for node in fired_nodes:
+        # 跳过起点和未发放的节点
         post_spike_time = float(spike_times_by_neuron[node])
-        candidates: list[tuple[float, int]] = []
+        if G.nodes[node].get("snn_neuron_closed", False):
+            continue
+        candidates: list[tuple[float, float, float, int]] = []
 
         # 遍历所有前驱节点
         for predecessor in G.predecessors(node):
             # 前驱必须也发放了脉冲
             if predecessor not in spike_times_by_neuron:
                 continue
+            if predecessor not in accumulated_cost:
+                continue
+            if G.nodes[predecessor].get("snn_neuron_closed", False):
+                continue
             attrs = G[predecessor][node]
             # 跳过阻塞边
-            if attrs.get("state") == "blocked":
+            if attrs.get("state") == "blocked" or attrs.get("snn_synapse_closed"):
                 continue
             delay = int(attrs.get(delay_attr, 0))
             if delay <= 0:
@@ -79,13 +104,17 @@ def infer_parent_trace_from_spikes(
             predicted_time = float(spike_times_by_neuron[predecessor]) + float(delay)
             # 时间匹配检查（容差内视为匹配）
             if abs(predicted_time - post_spike_time) <= tolerance_ms:
-                candidates.append((predicted_time, predecessor))
+                edge_cost = _positive_edge_cost(attrs, tie_break_attr)
+                path_cost = accumulated_cost[int(predecessor)] + edge_cost
+                time_error = abs(predicted_time - post_spike_time)
+                candidates.append((time_error, path_cost, edge_cost, int(predecessor)))
 
-        # 选择最早到达的候选（平局时选 ID 最小的）
+        # 在 spike-consistent 前驱中，优先选时间误差最小、累计真实代价更低的候选。
+        # 这仍然只使用 SNN spike wavefront 的可行父边，不读取 Dijkstra/A* 的路径结果。
         if candidates:
-            # min 按 (predicted_time, predecessor_id) 排序
-            predicted_time, chosen_parent = min(candidates, key=lambda item: (item[0], item[1]))
+            _time_error, chosen_cost, _edge_cost, chosen_parent = min(candidates)
             parent_trace[node] = int(chosen_parent)
+            accumulated_cost[int(node)] = float(chosen_cost)
 
     # 起点始终没有父节点
     parent_trace[start] = None

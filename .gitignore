@@ -1,8 +1,26 @@
 __pycache__/
 *.py[cod]
-*$py.class
-
 .pytest_cache/
-.matplotlib-cache/
 
-results/
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local/generated cache
+.matplotlib-cache/
+cache/

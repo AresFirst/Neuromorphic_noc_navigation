@@ -1,0 +1,110 @@
+{"kind":"deck","id":"pr/00yrbg","name":"Deck"}
+{"kind":"layout","layoutId":"9e0e23a7-c698-4b57-87b8-45b208e37066","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"f6b6b3be-7f20-4ad5-868c-32ba98c2b13f","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/15f7go","slide":1,"title":"抽象框架","textShapes":10}
+{"kind":"textbox","id":"sh/re1w7mp0","slide":1,"text":"抽象框架","textPreview":"抽象框架","textChars":4,"textLines":1,"bbox":[68,48,520,28]}
+{"kind":"textbox","id":"sh/kzupwb2h","slide":1,"text":"Wavefront：从导航到科学状态空间","textPreview":"Wavefront：从导航到科学状态空间","textChars":20,"textLines":1,"bbox":[68,84,1060,54]}
+{"kind":"shape","id":"sh/9knih4by","slide":1,"bbox":[68,152,90,4]}
+{"kind":"shape","id":"sh/rqd4vmtw","slide":1,"bbox":[705,202,120,54]}
+{"kind":"textbox","id":"sh/kb6xkf6d","slide":1,"text":"地图","textPreview":"地图","textChars":2,"textLines":1,"bbox":[717,216,96,28]}
+{"kind":"shape","id":"sh/9w3m94fu","slide":1,"bbox":[865,202,160,54]}
+{"kind":"textbox","id":"sh/2hwfyxob","slide":1,"text":"状态转移图","textPreview":"状态转移图","textChars":5,"textLines":1,"bbox":[877,216,136,28]}
+{"kind":"shape","id":"sh/r2p8nqxs","slide":1,"bbox":[1065,202,140,54]}
+{"kind":"textbox","id":"sh/7ed8bat4","slide":1,"text":"Wavefront","textPreview":"Wavefront","textChars":9,"textLines":1,"bbox":[1077,216,116,28]}
+{"kind":"shape","id":"sh/itgfmlkj","slide":1,"bbox":[825,229,40,0]}
+{"kind":"shape","id":"sh/pkzupwb2","slide":1,"bbox":[1025,229,40,0]}
+{"kind":"shape","id":"sh/0z61032l","slide":1,"bbox":[790,330,160,54]}
+{"kind":"textbox","id":"sh/72x4nap4","slide":1,"text":"全局到达场","textPreview":"全局到达场","textChars":5,"textLines":1,"bbox":[802,344,136,28]}
+{"kind":"shape","id":"sh/ih4byhgn","slide":1,"bbox":[1005,330,160,54]}
+{"kind":"textbox","id":"sh/p8nqxs72","slide":1,"text":"多请求复用","textPreview":"多请求复用","textChars":5,"textLines":1,"bbox":[1017,344,136,28]}
+{"kind":"shape","id":"sh/0nuxc3yl","slide":1,"bbox":[950,229,115,128]}
+{"kind":"shape","id":"sh/7y1kre1w","slide":1,"bbox":[950,357,55,0]}
+{"kind":"shape","id":"sh/ed8v6psf","slide":1,"bbox":[705,465,460,122]}
+{"kind":"textbox","id":"sh/mlkjm1cf","slide":1,"text":"汇报主线","textPreview":"汇报主线","textChars":4,"textLines":1,"bbox":[723,481,424,26]}
+{"kind":"textbox","id":"sh/f6dcbulw","slide":1,"text":"单次点对点规划未必占优；优势来自一次传播生成全局场，再服务大量起点、目标或重复查询。","textPreview":"单次点对点规划未必占优；优势来自一次传播生成全局场，再服务大量起点、目标或重复查询。","textChars":42,"textLines":1,"bbox":[723,513,424,58]}
+{"kind":"textbox","id":"sh/4r65wjud","slide":1,"text":"01 / 05","textPreview":"01 / 05","textChars":7,"textLines":1,"bbox":[68,670,90,24]}
+{"kind":"table","id":"tb/rqd4vmtw","slide":1,"name":"","rows":6,"cols":3,"preview":"导航问题 | 抽象模型 | 科学场景","bbox":[68,188,555,355]}
+{"kind":"notes","id":"nt/15f7go","slide":1,"text":""}
+{"kind":"slide","id":"sl/934d3d","slide":2,"title":"方向一","textShapes":10}
+{"kind":"textbox","id":"sh/7adsji5s","slide":2,"text":"方向一","textPreview":"方向一","textChars":3,"textLines":1,"bbox":[68,48,520,28]}
+{"kind":"textbox","id":"sh/wval87ed","slide":2,"text":"蛋白质构象路径场：生物化学原理","textPreview":"蛋白质构象路径场：生物化学原理","textChars":15,"textLines":1,"bbox":[68,84,1060,54]}
+{"kind":"shape","id":"sh/pg3ex0nu","slide":2,"bbox":[68,152,90,4]}
+{"kind":"shape","id":"sh/e1w7mp0b","slide":2,"bbox":[78,214,8,8]}
+{"kind":"textbox","id":"sh/7mp0bi9s","slide":2,"text":"蛋白质不是静态结构，而是在构象集合中热涨落与跃迁。","textPreview":"蛋白质不是静态结构，而是在构象集合中热涨落与跃迁。","textChars":25,"textLines":1,"bbox":[98,205,460,48]}
+{"kind":"shape","id":"sh/w7mp0bi9","slide":2,"bbox":[78,264,8,8]}
+{"kind":"textbox","id":"sh/psfil0rq","slide":2,"text":"自由能低谷对应稳定态；能垒决定跃迁难度。","textPreview":"自由能低谷对应稳定态；能垒决定跃迁难度。","textChars":20,"textLines":1,"bbox":[98,255,460,48]}
+{"kind":"shape","id":"sh/ed8bat47","slide":2,"bbox":[78,314,8,8]}
+{"kind":"textbox","id":"sh/7u54zido","slide":2,"text":"药物结合、变构激活、折叠/错折叠都可视为目标构象到达。","textPreview":"药物结合、变构激活、折叠/错折叠都可视为目标构象到达。","textChars":27,"textLines":1,"bbox":[98,305,460,48]}
+{"kind":"shape","id":"sh/3q5o7qpg","slide":2,"bbox":[78,364,8,8]}
+{"kind":"textbox","id":"sh/e9cvixcz","slide":2,"text":"MD/MSM 可将轨迹整理成状态图；MFPT 或 -logP 可作为边权。","textPreview":"MD/MSM 可将轨迹整理成状态图；MFPT 或 -logP 可作为边权。","textChars":37,"textLines":1,"bbox":[98,355,460,48]}
+{"kind":"shape","id":"sh/wb2hwfyx","slide":2,"bbox":[610,495,595,122]}
+{"kind":"textbox","id":"sh/3itgfmlk","slide":2,"text":"论文图说明","textPreview":"论文图说明","textChars":5,"textLines":1,"bbox":[628,511,559,26]}
+{"kind":"textbox","id":"sh/ex0nuxc3","slide":2,"text":"Trp-cage miniprotein 的自由能面与宏状态聚类展示：连续分子轨迹可被离散成 metastable states。","textPreview":"Trp-cage miniprotein 的自由能面与宏状态聚类展示：连续分子轨迹可被离散成 metastable states。","textChars":65,"textLines":1,"bbox":[628,543,559,58]}
+{"kind":"textbox","id":"sh/loj2t83i","slide":2,"text":"02 / 05","textPreview":"02 / 05","textChars":7,"textLines":1,"bbox":[68,670,90,24]}
+{"kind":"textbox","id":"sh/w3m94fu1","slide":2,"text":"图源：Sidky, Chen & Ferguson, arXiv:1906.04890, Fig.7","textPreview":"图源：Sidky, Chen & Ferguson, arXiv:1906.04890, Fig.7","textChars":50,"textLines":1,"bbox":[590,667,622,32]}
+{"kind":"image","id":"im/q1orytsv","slide":2,"name":"","geometry":"roundRect","alt":"Free energy surfaces and macrostate clustering from a Trp-cage MSM paper","bbox":[610,135,595,330]}
+{"kind":"notes","id":"nt/934d3d","slide":2,"text":""}
+{"kind":"slide","id":"sl/wt578u","slide":3,"title":"方向一 · 方法对比","textShapes":9}
+{"kind":"textbox","id":"sh/2t83itgf","slide":3,"text":"方向一 · 方法对比","textPreview":"方向一 · 方法对比","textChars":10,"textLines":1,"bbox":[68,48,520,28]}
+{"kind":"textbox","id":"sh/9knih4by","slide":3,"text":"Wavefront 如何服务构象网络","textPreview":"Wavefront 如何服务构象网络","textChars":18,"textLines":1,"bbox":[68,84,1060,54]}
+{"kind":"shape","id":"sh/kzupwb2h","slide":3,"bbox":[68,152,90,4]}
+{"kind":"shape","id":"sh/rqd4vmtw","slide":3,"bbox":[76,190,120,54]}
+{"kind":"textbox","id":"sh/25kb6xkf","slide":3,"text":"目标构象","textPreview":"目标构象","textChars":4,"textLines":1,"bbox":[88,204,96,28]}
+{"kind":"shape","id":"sh/9w3m94fu","slide":3,"bbox":[236,190,130,54]}
+{"kind":"textbox","id":"sh/kb6xkf6d","slide":3,"text":"反向传播","textPreview":"反向传播","textChars":4,"textLines":1,"bbox":[248,204,106,28]}
+{"kind":"shape","id":"sh/r2p8nqxs","slide":3,"bbox":[406,190,150,54]}
+{"kind":"textbox","id":"sh/2hwfyxob","slide":3,"text":"next-hop field","textPreview":"next-hop field","textChars":14,"textLines":1,"bbox":[418,204,126,28]}
+{"kind":"shape","id":"sh/crmhk3q5","slide":3,"bbox":[196,217,40,0]}
+{"kind":"shape","id":"sh/1cfa9w3m","slide":3,"bbox":[366,217,40,0]}
+{"kind":"shape","id":"sh/j6tovaho","slide":3,"bbox":[70,558,520,104]}
+{"kind":"textbox","id":"sh/c3ylc7u5","slide":3,"text":"核心判断","textPreview":"核心判断","textChars":4,"textLines":1,"bbox":[88,574,484,26]}
+{"kind":"textbox","id":"sh/1kre1w7m","slide":3,"text":"SNN wavefront 更像全局场生成器，而不是单次最短路算法的直接替代品。","textPreview":"SNN wavefront 更像全局场生成器，而不是单次最短路算法的直接替代品。","textChars":40,"textLines":1,"bbox":[88,606,484,40]}
+{"kind":"textbox","id":"sh/ji5snelo","slide":3,"text":"03 / 05","textPreview":"03 / 05","textChars":7,"textLines":1,"bbox":[68,670,90,24]}
+{"kind":"textbox","id":"sh/8bat47y1","slide":3,"text":"图源：Sidky, Chen & Ferguson, arXiv:1906.04890, Fig.8","textPreview":"图源：Sidky, Chen & Ferguson, arXiv:1906.04890, Fig.8","textChars":50,"textLines":1,"bbox":[590,667,622,32]}
+{"kind":"table","id":"tb/l0rqd4vm","slide":3,"name":"","rows":4,"cols":3,"preview":"问题 | Dijkstra / A* | Wavefront","bbox":[70,295,520,238]}
+{"kind":"image","id":"im/xs72x4na","slide":3,"name":"","geometry":"roundRect","alt":"Trp-cage metastable macrostate transition network","bbox":[645,130,500,500]}
+{"kind":"notes","id":"nt/wt578u","slide":3,"text":""}
+{"kind":"slide","id":"sl/1fsbpx","slide":4,"title":"方向二","textShapes":10}
+{"kind":"textbox","id":"sh/knih4byh","slide":4,"text":"方向二","textPreview":"方向二","textChars":3,"textLines":1,"bbox":[68,48,520,28]}
+{"kind":"textbox","id":"sh/v6psfil0","slide":4,"text":"单细胞分化命运场：发育生物学原理","textPreview":"单细胞分化命运场：发育生物学原理","textChars":16,"textLines":1,"bbox":[68,84,1060,54]}
+{"kind":"shape","id":"sh/2lszqtcj","slide":4,"bbox":[68,152,90,4]}
+{"kind":"shape","id":"sh/d0z61032","slide":4,"bbox":[78,214,8,8]}
+{"kind":"textbox","id":"sh/kf6dcbul","slide":4,"text":"scRNA-seq 将每个细胞表示为高维表达状态。","textPreview":"scRNA-seq 将每个细胞表示为高维表达状态。","textChars":25,"textLines":1,"bbox":[98,205,455,48]}
+{"kind":"shape","id":"sh/vu9knih4","slide":4,"bbox":[78,264,8,8]}
+{"kind":"textbox","id":"sh/29gr2p8n","slide":4,"text":"KNN 图描述细胞相似性；RNA velocity 或时间信息提供方向。","textPreview":"KNN 图描述细胞相似性；RNA velocity 或时间信息提供方向。","textChars":36,"textLines":1,"bbox":[98,255,455,48]}
+{"kind":"shape","id":"sh/donyd0z6","slide":4,"bbox":[78,326,8,8]}
+{"kind":"textbox","id":"sh/k3q5o7qp","slide":4,"text":"终末细胞类型是目标 basin；中间细胞保留多种命运可能。","textPreview":"终末细胞类型是目标 basin；中间细胞保留多种命运可能。","textChars":29,"textLines":1,"bbox":[98,317,455,48]}
+{"kind":"shape","id":"sh/at47y1kr","slide":4,"bbox":[78,376,8,8]}
+{"kind":"textbox","id":"sh/3ex0nuxc","slide":4,"text":"目标：判断当前细胞更接近哪种命运，以及下一步倾向。","textPreview":"目标：判断当前细胞更接近哪种命运，以及下一步倾向。","textChars":25,"textLines":1,"bbox":[98,367,455,48]}
+{"kind":"shape","id":"sh/lkjm1cfa","slide":4,"bbox":[610,552,585,104]}
+{"kind":"textbox","id":"sh/ahoza1gv","slide":4,"text":"论文图说明","textPreview":"论文图说明","textChars":5,"textLines":1,"bbox":[628,568,549,26]}
+{"kind":"textbox","id":"sh/32lszqtc","slide":4,"text":"CellRank 将 velocity 与 KNN 图结合为有向 Markov chain，并计算 terminal fate probabilities。","textPreview":"CellRank 将 velocity 与 KNN 图结合为有向 Markov chain，并计算 terminal fate probabilities。","textChars":78,"textLines":1,"bbox":[628,600,549,40]}
+{"kind":"textbox","id":"sh/sneloj2t","slide":4,"text":"04 / 05","textPreview":"04 / 05","textChars":7,"textLines":1,"bbox":[68,670,90,24]}
+{"kind":"textbox","id":"sh/l87ed8ba","slide":4,"text":"图源：Lange et al., Nature Methods 2022, CellRank Fig.1","textPreview":"图源：Lange et al., Nature Methods 2022, CellRank Fig.1","textChars":52,"textLines":1,"bbox":[590,667,622,32]}
+{"kind":"image","id":"im/7qpg3ex0","slide":4,"name":"","geometry":"roundRect","alt":"CellRank directed fate mapping overview","bbox":[610,128,585,420]}
+{"kind":"notes","id":"nt/1fsbpx","slide":4,"text":""}
+{"kind":"slide","id":"sl/m0lp18","slide":5,"title":"方向二 · 方法对比","textShapes":12}
+{"kind":"textbox","id":"sh/qxs72x4n","slide":5,"text":"方向二 · 方法对比","textPreview":"方向二 · 方法对比","textChars":10,"textLines":1,"bbox":[68,48,520,28]}
+{"kind":"textbox","id":"sh/xobm58z2","slide":5,"text":"Wavefront 用于细胞命运查询","textPreview":"Wavefront 用于细胞命运查询","textChars":18,"textLines":1,"bbox":[68,84,1060,54]}
+{"kind":"shape","id":"sh/83itgfml","slide":5,"bbox":[68,152,90,4]}
+{"kind":"shape","id":"sh/fu18jqh0","slide":5,"bbox":[78,196,130,54]}
+{"kind":"textbox","id":"sh/m94fu18j","slide":5,"text":"终末命运","textPreview":"终末命运","textChars":4,"textLines":1,"bbox":[90,210,106,28]}
+{"kind":"shape","id":"sh/x0nuxc3y","slide":5,"bbox":[252,196,160,54]}
+{"kind":"textbox","id":"sh/4fu18jqh","slide":5,"text":"反向 wavefront","textPreview":"反向 wavefront","textChars":12,"textLines":1,"bbox":[264,210,136,28]}
+{"kind":"shape","id":"sh/f6dcbulw","slide":5,"bbox":[456,196,150,54]}
+{"kind":"textbox","id":"sh/mlkjm1cf","slide":5,"text":"命运目标场","textPreview":"命运目标场","textChars":5,"textLines":1,"bbox":[468,210,126,28]}
+{"kind":"shape","id":"sh/gbq1oryt","slide":5,"bbox":[658,196,160,54]}
+{"kind":"textbox","id":"sh/5wjudg7a","slide":5,"text":"全部细胞查询","textPreview":"全部细胞查询","textChars":6,"textLines":1,"bbox":[670,210,136,28]}
+{"kind":"shape","id":"sh/y90je9cv","slide":5,"bbox":[208,223,44,0]}
+{"kind":"shape","id":"sh/nuxc3ylc","slide":5,"bbox":[412,223,44,0]}
+{"kind":"shape","id":"sh/gn29gr2p","slide":5,"bbox":[606,223,52,0]}
+{"kind":"shape","id":"sh/yhgn29gr","slide":5,"bbox":[900,178,280,122]}
+{"kind":"textbox","id":"sh/n29gr2p8","slide":5,"text":"适用任务","textPreview":"适用任务","textChars":4,"textLines":1,"bbox":[918,194,244,26]}
+{"kind":"textbox","id":"sh/czed8v6p","slide":5,"text":"胰腺发育、造血分化、肿瘤耐药、细胞重编程。","textPreview":"胰腺发育、造血分化、肿瘤耐药、细胞重编程。","textChars":21,"textLines":1,"bbox":[918,226,244,58]}
+{"kind":"shape","id":"sh/5kb6xkf6","slide":5,"bbox":[900,338,280,122]}
+{"kind":"textbox","id":"sh/9cvixcze","slide":5,"text":"汇报结论","textPreview":"汇报结论","textChars":4,"textLines":1,"bbox":[918,354,244,26]}
+{"kind":"textbox","id":"sh/gr2p8nqx","slide":5,"text":"Wavefront 的价值在于一次生成可复用的全局命运路径场。","textPreview":"Wavefront 的价值在于一次生成可复用的全局命运路径场。","textChars":31,"textLines":1,"bbox":[918,386,244,58]}
+{"kind":"textbox","id":"sh/r65wjudg","slide":5,"text":"05 / 05","textPreview":"05 / 05","textChars":7,"textLines":1,"bbox":[68,670,90,24]}
+{"kind":"textbox","id":"sh/ylc7u54z","slide":5,"text":"参考：Lange et al., Nature Methods 2022; Ponulak & Hopfield, arXiv:1205.0335","textPreview":"参考：Lange et al., Nature Methods 2022; Ponulak & Hopfield, arXiv:1205.0335","textChars":73,"textLines":1,"bbox":[590,667,622,32]}
+{"kind":"table","id":"tb/ulwval87","slide":5,"name":"","rows":4,"cols":3,"preview":"单细胞问题 | 传统单对单查询 | Wavefront 目标场","bbox":[78,305,760,245]}
+{"kind":"notes","id":"nt/m0lp18","slide":5,"text":""}

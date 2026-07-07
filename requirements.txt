@@ -1,21 +1,19 @@
-# ===== 数值与科学计算 =====
-numpy         # 数组运算、随机数生成、数值计算基础库
-scipy         # 科学计算（本项目暂时未深度使用，预留）
+# Core runtime
+numpy
+networkx
+pyyaml
+pandas
+requests
+osmnx
+geopandas
+shapely
+folium
+streamlit
+streamlit-folium
 
-# ===== 图结构与算法 =====
-networkx      # 有向图数据结构 (DiGraph)、图生成算法、Dijkstra 最短路径
+# Brian2Loihi planner
+brian2
+brian2-loihi
 
-# ===== 可视化 =====
-matplotlib    # 图拓扑可视化、路径叠加绘制、实验结果图表
-
-# ===== 数据处理 =====
-pandas        # 实验结果 DataFrame (CSV 读写)、数据统计分析、spike/packet trace 表格操作
-pyyaml        # YAML 配置文件解析 (graph.yaml, brian2loihi.yaml, noxim.yaml)
-
-# ===== 实验辅助 =====
-tqdm          # 长时间实验的进度条显示 (如 50 对起止点的批量测试)
-pytest        # 单元测试框架 (运行 tests/ 下的 12 个测试文件)
-
-# ===== 神经形态模拟器 =====
-brian2        # 脉冲神经网络 (SNN) 模拟器核心，提供 NeuronGroup、Synapses、SpikeMonitor 等
-brian2-loihi  # Loihi 芯片的 Brian2 兼容后端，提供 LoihiNeuronGroup、LoihiSynapses 等
+# Tests
+pytest
